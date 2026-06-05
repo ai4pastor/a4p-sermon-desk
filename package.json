@@ -1,0 +1,26 @@
+{
+  "name": "a4p-sermon-desk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A4P Sermon Desk — 설교 준비 보조 옵시디언 플러그인",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "0.21.5",
+    "obsidian": "^1.5.0",
+    "tslib": "^2.6.2",
+    "typescript": "^5.4.5"
+  },
+  "dependencies": {
+    "@types/sql.js": "^1.4.11",
+    "garu-ko": "^0.6.6",
+    "preact": "^10.29.1",
+    "sql.js": "^1.14.1"
+  }
+}

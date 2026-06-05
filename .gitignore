@@ -1,0 +1,13 @@
+node_modules/
+main.js
+main.js.map
+sql-wasm.wasm
+data.json
+data.json.*
+index.db
+index.db.tmp
+index.db.bak
+.DS_Store
+*.log
+.ai-ready/
+docs/RESUME.md

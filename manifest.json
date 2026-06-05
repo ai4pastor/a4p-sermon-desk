@@ -1,0 +1,9 @@
+{
+  "id": "a4p-sermon-desk",
+  "name": "A4P Sermon Desk",
+  "version": "0.1.3",
+  "minAppVersion": "1.5.0",
+  "description": "설교 작성 중인 문단을 기준으로 내 과거 설교·묵상·설교조각과 외부 자료를 자동으로 찾아주는 설교 준비 보조 도구.",
+  "author": "csh",
+  "isDesktopOnly": true
+}
