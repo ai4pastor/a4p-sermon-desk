@@ -102,7 +102,8 @@ export function normalizeTag(s: string): string {
 	const caret = t.indexOf("^");
 	if (caret >= 0) t = t.slice(0, caret);
 	t = t.replace(/^(\p{Extended_Pictographic}\uFE0F?\s*)+/u, "");
-	return t.trim();
+	// NFD \uD14D\uC2A4\uD2B8\uAC00 \uC11E\uC5EC\uB3C4 \uC0C9\uC778\u00B7\uCFFC\uB9AC \uD0A4\uAC00 \uC77C\uCE58\uD558\uB3C4\uB85D \uD1B5\uC77C.
+	return t.trim().normalize("NFC");
 }
 
 export function addLinkVariants(tags: Set<string>, raw: string): void {
@@ -190,7 +191,17 @@ export async function extractQueryKeys(
 		const substringMatches = new Set<string>();
 		for (const key of lexicon) {
 			if (key.length < 2) continue;
-			if (cleaned.includes(key)) substringMatches.add(key);
+			// 라틴 키는 단어 경계 필수 — "art"가 "start"에 오탐되지 않게.
+			// 한글은 조사·어미가 붙는 특성상 부분 포함("구원"⊂"구원하다")을 유지.
+			if (/^[\x20-\x7e]+$/.test(key)) {
+				const re = new RegExp(
+					`\\b${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+					"i",
+				);
+				if (re.test(cleaned)) substringMatches.add(key);
+			} else if (cleaned.includes(key)) {
+				substringMatches.add(key);
+			}
 		}
 		for (const k of tokenMatches) keys.add(k);
 		for (const k of substringMatches) keys.add(k);
@@ -279,6 +290,8 @@ export function tagSearch(
 	);
 
 	const scores = new Map<string, number>();
+	// 실제 매칭 키 수 — matchedQueryTerms 표시용 (가중합 rawScore와 별개).
+	const matchCounts = new Map<string, number>();
 	if (docRows[0]) {
 		for (const r of docRows[0].values) {
 			const path = String(r[0]);
@@ -289,6 +302,7 @@ export function tagSearch(
 			else if (keys.dVec.has(key)) w = W_DOCTRINE_VEC;
 			else continue;
 			scores.set(path, (scores.get(path) ?? 0) + w);
+			matchCounts.set(path, (matchCounts.get(path) ?? 0) + 1);
 		}
 	}
 	if (tagRows[0]) {
@@ -300,6 +314,7 @@ export function tagSearch(
 			else if (keys.tVec.has(key)) w = W_TAG_VEC;
 			else continue;
 			scores.set(path, (scores.get(path) ?? 0) + w);
+			matchCounts.set(path, (matchCounts.get(path) ?? 0) + 1);
 		}
 	}
 
@@ -393,7 +408,7 @@ export function tagSearch(
 			bm25Score: null,
 			vectorScore: null,
 			headingMatched: false,
-			matchedQueryTerms: Math.round(c.rawScore),
+			matchedQueryTerms: matchCounts.get(c.path) ?? 0,
 			queryTermsTotal: allKeys.size,
 		});
 	}

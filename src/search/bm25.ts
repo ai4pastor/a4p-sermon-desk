@@ -8,22 +8,29 @@ export interface BM25Hit {
 const K1 = 1.2;
 const B = 0.75;
 
-export function bm25Search(
-	db: Database,
-	queryTerms: string[],
-	topK: number,
-): BM25Hit[] {
-	const uniqueTerms = Array.from(new Set(queryTerms.filter((t) => t.length > 0)));
-	if (uniqueTerms.length === 0) return [];
+interface Bm25Stats {
+	N: number;
+	avgdl: number;
+	dlMap: Map<number, number>;
+}
 
+// 문서 통계(N·avgdl·문서길이 맵) 캐시 — 매 쿼리 전체 집계를 피한다.
+// chunks는 UPDATE 없이 delete+insert(AUTOINCREMENT)이고 chunk_terms는
+// chunks와 함께만 변하므로, chunks의 COUNT+MAX(id) 지문으로 감지된다.
+let statsCache: { fp: string; stats: Bm25Stats } | null = null;
+
+function chunksFingerprint(db: Database): string {
+	const r = db.exec("SELECT COUNT(*), MAX(id) FROM chunks");
+	const row = r[0]?.values[0];
+	return row ? `${row[0]}:${row[1]}` : "0:null";
+}
+
+function loadStats(db: Database): Bm25Stats {
 	const nRow = db.exec("SELECT COUNT(*) FROM chunks")[0];
 	const N = nRow ? Number(nRow.values[0][0]) : 0;
-	if (N === 0) return [];
 
 	const totalRow = db.exec("SELECT COUNT(*) FROM chunk_terms")[0];
 	const totalTerms = totalRow ? Number(totalRow.values[0][0]) : 0;
-	if (totalTerms === 0) return [];
-	const avgdl = totalTerms / N;
 
 	const dlMap = new Map<number, number>();
 	const dlRes = db.exec(
@@ -34,6 +41,23 @@ export function bm25Search(
 			dlMap.set(Number(row[0]), Number(row[1]));
 		}
 	}
+	return { N, avgdl: N > 0 ? totalTerms / N : 0, dlMap };
+}
+
+export function bm25Search(
+	db: Database,
+	queryTerms: string[],
+	topK: number,
+): BM25Hit[] {
+	const uniqueTerms = Array.from(new Set(queryTerms.filter((t) => t.length > 0)));
+	if (uniqueTerms.length === 0) return [];
+
+	const fp = chunksFingerprint(db);
+	if (!statsCache || statsCache.fp !== fp) {
+		statsCache = { fp, stats: loadStats(db) };
+	}
+	const { N, avgdl, dlMap } = statsCache.stats;
+	if (N === 0 || avgdl === 0) return [];
 
 	const dfMap = new Map<string, number>();
 	const dfStmt = db.prepare(

@@ -72,7 +72,9 @@ export function tokenizeNaive(text: string): string[] {
 
 export async function tokenize(text: string): Promise<string[]> {
 	if (!text) return [];
-	return hasHangul(text) ? tokenizeKorean(text) : tokenizeNaive(text);
+	// NFD(iCloud 등 외부 동기화) 텍스트가 섞여도 색인·쿼리 토큰이 일치하도록 통일.
+	const nfc = text.normalize("NFC");
+	return hasHangul(nfc) ? tokenizeKorean(nfc) : tokenizeNaive(nfc);
 }
 
 export function isStopword(token: string): boolean {

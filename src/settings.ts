@@ -270,14 +270,21 @@ export function normalizeSettings(
 	};
 }
 
+/** 폴더 경계를 존중하는 prefix 매칭 — "Ser"이 "Sermons2/…"에 오매칭되지 않게. */
+export function isUnderFolder(path: string, folder: string): boolean {
+	if (folder.length === 0) return false;
+	const prefix = folder.endsWith("/") ? folder : `${folder}/`;
+	return path === folder || path.startsWith(prefix);
+}
+
 export function isPathExcluded(
 	settings: WeightedRecallSettings,
 	path: string,
 ): boolean {
-	return settings.excludedFolders.some((excl) => path.startsWith(excl));
+	return settings.excludedFolders.some((excl) => isUnderFolder(path, excl));
 }
 
-/** path를 prefix로 갖는 폴더 중 가장 긴(가장 구체적인) 폴더를 반환. */
+/** path가 속한 폴더 중 가장 긴(가장 구체적인) 폴더를 반환. */
 export function longestPrefixFolder(
 	settings: WeightedRecallSettings,
 	path: string,
@@ -285,7 +292,7 @@ export function longestPrefixFolder(
 	let best: FolderEntry | undefined;
 	for (const f of settings.folders) {
 		if (
-			path.startsWith(f.path) &&
+			isUnderFolder(path, f.path) &&
 			(!best || f.path.length > best.path.length)
 		) {
 			best = f;

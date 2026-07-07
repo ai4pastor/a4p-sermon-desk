@@ -10,7 +10,7 @@ import {
 } from "./settings";
 import { WeightedRecallSettingTab } from "./settings-tab";
 import { loadOrCreateDb, saveDb } from "./db/persistence";
-import { runFullIndex } from "./indexer/indexer";
+import { runIndex } from "./indexer/indexer";
 import { reapplyFolderSettings } from "./indexer/scanner";
 import { embedMissingChunks } from "./embedder/embed-all";
 import { embedTexts } from "./embedder/openai";
@@ -520,8 +520,8 @@ export default class WeightedRecallPlugin extends Plugin {
 		await this.saveData(this.settings);
 	}
 
-	/** 전체 재색인 — 커맨드와 설정 탭 버튼이 공유. */
-	async runReindex(): Promise<void> {
+	/** 재색인(기본 변경분만, force면 전체) — 설정 탭 버튼이 호출. */
+	async runReindex(force = false): Promise<void> {
 		return this.withBusy(async () => {
 			if (!this.db) {
 				new Notice("A4P Sermon Desk: DB가 로드되지 않았습니다");
@@ -534,11 +534,12 @@ export default class WeightedRecallPlugin extends Plugin {
 			try {
 				await preloadMorpheme();
 				progress.setMessage("A4P Sermon Desk: 인덱싱 0/?");
-				const result = await runFullIndex(
+				const result = await runIndex(
 					this.app,
 					this.db,
 					this.settings,
 					{
+						force,
 						onProgress: (done, total) =>
 							progress.setMessage(
 								`A4P Sermon Desk: 인덱싱 ${done}/${total}`,
@@ -547,9 +548,22 @@ export default class WeightedRecallPlugin extends Plugin {
 				);
 				await saveDb(this, this.db);
 				progress.hide();
-				new Notice(
-					`A4P Sermon Desk: ${result.notes} 노트, ${result.chunks} 청크 인덱싱 완료`,
-				);
+				if (result.mode === "full") {
+					new Notice(
+						`A4P Sermon Desk: 전체 재색인 완료 — ${result.added} 노트, ${result.chunks} 청크`,
+					);
+				} else if (
+					result.added + result.updated + result.removed ===
+					0
+				) {
+					new Notice(
+						`A4P Sermon Desk: 변경된 노트가 없습니다 (${result.unchanged}개 최신 상태)`,
+					);
+				} else {
+					new Notice(
+						`A4P Sermon Desk: 재색인 완료 — 추가 ${result.added} · 변경 ${result.updated} · 삭제 ${result.removed} (스킵 ${result.unchanged}), 청크 ${result.chunks}개`,
+					);
+				}
 			} catch (e) {
 				progress.hide();
 				new Notice(

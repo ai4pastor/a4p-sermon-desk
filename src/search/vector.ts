@@ -9,6 +9,48 @@ export type VectorMatch = {
 
 const DEFAULT_TOP_K = 30;
 
+interface CachedEmbedding {
+	chunkId: number;
+	vec: Float32Array;
+	norm: number;
+}
+
+// 청크 임베딩 메모리 캐시 — 검색마다 전량 blob 읽기·변환을 피한다.
+// chunks/embeddings는 UPDATE 없이 delete+insert(AUTOINCREMENT)이므로
+// COUNT+MAX(rowid) 지문으로 모든 변경이 감지된다.
+let embCache: {
+	model: string;
+	fp: string;
+	entries: CachedEmbedding[];
+} | null = null;
+
+function embeddingsFingerprint(db: Database, model: string): string {
+	const r = db.exec(
+		"SELECT COUNT(*), MAX(rowid) FROM embeddings WHERE model = ?",
+		[model],
+	);
+	const row = r[0]?.values[0];
+	return row ? `${row[0]}:${row[1]}` : "0:null";
+}
+
+function loadEmbeddings(db: Database, model: string): CachedEmbedding[] {
+	const stmt = db.prepare(
+		"SELECT chunk_id, vector FROM embeddings WHERE model = ?",
+	);
+	const entries: CachedEmbedding[] = [];
+	try {
+		stmt.bind([model]);
+		while (stmt.step()) {
+			const row = stmt.get() as [number, Uint8Array];
+			const vec = blobToFloat(row[1]);
+			entries.push({ chunkId: row[0], vec, norm: norm(vec) });
+		}
+	} finally {
+		stmt.free();
+	}
+	return entries;
+}
+
 export function vectorSearch(
 	db: Database,
 	queryVector: Float32Array,
@@ -18,21 +60,23 @@ export function vectorSearch(
 	const queryNorm = norm(queryVector);
 	if (queryNorm === 0) return [];
 
-	const stmt = db.prepare(
-		"SELECT chunk_id, vector FROM embeddings WHERE model = ?",
-	);
+	const fp = embeddingsFingerprint(db, model);
+	if (!embCache || embCache.model !== model || embCache.fp !== fp) {
+		embCache = { model, fp, entries: loadEmbeddings(db, model) };
+	}
+
 	const scored: { chunkId: number; similarity: number }[] = [];
-	try {
-		stmt.bind([model]);
-		while (stmt.step()) {
-			const row = stmt.get() as [number, Uint8Array];
-			const vec = blobToFloat(row[1]);
-			if (vec.length !== queryVector.length) continue;
-			const sim = cosine(queryVector, queryNorm, vec);
-			scored.push({ chunkId: row[0], similarity: sim });
+	for (const e of embCache.entries) {
+		if (e.vec.length !== queryVector.length) continue;
+		if (e.norm === 0) continue;
+		let dot = 0;
+		for (let i = 0; i < queryVector.length; i++) {
+			dot += queryVector[i] * e.vec[i];
 		}
-	} finally {
-		stmt.free();
+		scored.push({
+			chunkId: e.chunkId,
+			similarity: dot / (queryNorm * e.norm),
+		});
 	}
 
 	scored.sort((a, b) => b.similarity - a.similarity);

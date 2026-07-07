@@ -121,7 +121,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 				"▶ 지금 할 일: 아래 ‘📂 검색 대상 폴더’에서 내 설교·묵상 폴더를 먼저 추가하세요.";
 		} else if (!db || chunks === 0 || !inSync) {
 			now =
-				"▶ 지금 할 일: ‘📂 검색 대상 폴더’의 [전체 재색인] 버튼을 누르세요. (노트를 읽어 들이는 과정이라 몇 분 걸릴 수 있습니다)";
+				"▶ 지금 할 일: ‘📂 검색 대상 폴더’의 [재색인 (변경분만)] 버튼을 누르세요. (처음엔 전체를 읽어 들여 몇 분 걸릴 수 있습니다)";
 		} else {
 			now =
 				"✅ 검색 준비 완료! 노트에서 텍스트를 선택하고 우클릭 → ‘선택 텍스트로 참고자료 검색’을 누르면 관련 자료가 옆 패널에 추천됩니다. (패널 열기: 명령 팔레트 → ‘설교 준비 데스크 열기’)";
@@ -133,7 +133,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 			text: "검색할 폴더 추가 — 아래 ‘📂 검색 대상 폴더’ (필수)",
 		});
 		ol.createEl("li", {
-			text: "[전체 재색인] 누르기 — 폴더를 정한 뒤 한 번 (필수)",
+			text: "[재색인 (변경분만)] 누르기 — 폴더를 정한 뒤 한 번 (필수)",
 		});
 		box.createEl("p", {
 			text: "※ 문장 의미로 찾는 ‘의미 검색’을 쓰려면 위 ‘🔑 OpenAI API 키’도 입력하세요(없으면 태그 검색만 됩니다). 태그·교리 검색을 더 정확하게 하려면 맨 아래 ‘선택: 태그 검색 강화’를 나중에 설정하세요.",
@@ -459,7 +459,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 	private renderTagEmbeddings(containerEl: HTMLElement): void {
 		containerEl.createEl("h3", { text: "🏷️ 볼트 태그 임베딩 (DOCTRINE과 별개)" });
 		containerEl.createEl("p", {
-			text: "노트의 #태그·태그 위키링크를 임베딩해 검색 시 의미가 가까운 태그까지 매치합니다. 위 ①②③(교리 키워드)와 무관하게 독립적으로 쓸 수 있습니다. 노트에 새 태그를 달고 ‘전체 재색인’을 하면 아래 ‘대기 N개’가 늘어납니다 — 그때 이 버튼을 누르세요.",
+			text: "노트의 #태그·태그 위키링크를 임베딩해 검색 시 의미가 가까운 태그까지 매치합니다. 위 ①②③(교리 키워드)와 무관하게 독립적으로 쓸 수 있습니다. 노트에 새 태그를 달고 ‘재색인’을 하면 아래 ‘대기 N개’가 늘어납니다 — 그때 이 버튼을 누르세요.",
 			cls: "setting-item-description",
 		});
 
@@ -495,7 +495,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 				embedBtn.setButtonText("태그 임베딩 — DB 로드 전").setDisabled(true);
 			} else if (total === 0) {
 				embedBtn
-					.setButtonText("태그 임베딩 — 먼저 전체 재색인")
+					.setButtonText("태그 임베딩 — 먼저 재색인")
 					.setDisabled(true);
 			} else if (pending === 0) {
 				embedBtn.setButtonText("태그 임베딩 (최신)").setDisabled(true);
@@ -649,13 +649,24 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 					});
 			})
 			.addButton((btn) => {
-				btn.setButtonText("전체 재색인")
+				btn.setButtonText("재색인 (변경분만)")
 					.setTooltip(
-						"새 폴더를 추가했거나 처음 설정할 때 (시간이 걸립니다)",
+						"바뀐 노트만 다시 읽습니다. 처음이거나 업그레이드 직후엔 자동으로 전체를 다시 만듭니다.",
+					)
+					.onClick(async () => {
+						btn.setButtonText("재색인 중…").setDisabled(true);
+						await this.plugin.runReindex();
+						this.display();
+					});
+			})
+			.addButton((btn) => {
+				btn.setButtonText("강제 전체 재색인")
+					.setTooltip(
+						"인덱스를 전부 지우고 다시 만듭니다. 임베딩도 전량 재생성되어 API 비용이 발생합니다.",
 					)
 					.onClick(async () => {
 						btn.setButtonText("전체 재색인 중…").setDisabled(true);
-						await this.plugin.runReindex();
+						await this.plugin.runReindex(true);
 						this.display();
 					});
 			});

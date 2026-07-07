@@ -202,9 +202,12 @@ export class RecallView extends ItemView {
 			}),
 		);
 
-		this.selectionPollId = window.setInterval(() => {
-			this.checkSelection();
-		}, SELECTION_POLL_MS);
+		// registerInterval — 뷰 언로드 시 Obsidian이 자동 정리 (onClose 수동 clear는 유지).
+		this.selectionPollId = this.registerInterval(
+			window.setInterval(() => {
+				this.checkSelection();
+			}, SELECTION_POLL_MS),
+		);
 
 		this.updateAutoSearchUI();
 	}

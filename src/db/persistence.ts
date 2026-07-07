@@ -25,6 +25,16 @@ export async function loadOrCreateDb(plugin: Plugin): Promise<Database> {
 	const path = dbPath(plugin);
 	const bak = bakPath(plugin);
 
+	// 이전 저장이 실패하며 남긴 고아 .tmp 정리
+	const tmp = tmpPath(plugin);
+	if (await adapter.exists(tmp)) {
+		try {
+			await adapter.remove(tmp);
+		} catch (e) {
+			console.warn("[a4p-sermon-desk] 고아 .tmp 제거 실패", e);
+		}
+	}
+
 	// 이전 저장이 교체 도중 중단돼 index.db가 사라지고 .bak만 남은 경우 복구
 	if (!(await adapter.exists(path)) && (await adapter.exists(bak))) {
 		console.warn("[a4p-sermon-desk] index.db 없음 — .bak에서 복구합니다");
@@ -72,15 +82,25 @@ export async function saveDb(plugin: Plugin, db: Database): Promise<void> {
 	const bak = bakPath(plugin);
 	const bytes = db.export();
 
-	// 1) 새 인덱스를 임시 파일에 먼저 쓴다
-	await adapter.writeBinary(tmp, bytes.buffer as ArrayBuffer);
-	// 2) 기존 인덱스를 .bak로 보존한 뒤 교체 — 어느 단계에서 중단돼도
-	//    index.db 또는 index.db.bak 중 하나는 온전하게 남는다
-	if (await adapter.exists(path)) {
+	try {
+		// 1) 새 인덱스를 임시 파일에 먼저 쓴다
+		await adapter.writeBinary(tmp, bytes.buffer as ArrayBuffer);
+		// 2) 기존 인덱스를 .bak로 보존한 뒤 교체 — 어느 단계에서 중단돼도
+		//    index.db 또는 index.db.bak 중 하나는 온전하게 남는다
+		if (await adapter.exists(path)) {
+			if (await adapter.exists(bak)) await adapter.remove(bak);
+			await adapter.rename(path, bak);
+		}
+		await adapter.rename(tmp, path);
+		// 3) 교체 성공 — 백업 제거
 		if (await adapter.exists(bak)) await adapter.remove(bak);
-		await adapter.rename(path, bak);
+	} catch (e) {
+		// 고아 .tmp 정리 후 rethrow — 사용자 알림은 호출부(Notice)가 담당
+		try {
+			if (await adapter.exists(tmp)) await adapter.remove(tmp);
+		} catch {
+			// 정리 실패는 무시 (다음 로드에서 제거됨)
+		}
+		throw e;
 	}
-	await adapter.rename(tmp, path);
-	// 3) 교체 성공 — 백업 제거
-	if (await adapter.exists(bak)) await adapter.remove(bak);
 }

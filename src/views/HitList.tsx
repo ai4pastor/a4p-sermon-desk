@@ -149,6 +149,9 @@ function HitList(props: HitListProps) {
 }
 
 function ResizeHandle(props: { onDrag: (ratio: number) => void }) {
+	// 드래그 도중 언마운트되어도 document 리스너·body 클래스가 남지 않게.
+	const dragCtrl = useRef<AbortController | null>(null);
+	useEffect(() => () => dragCtrl.current?.abort(), []);
 	const handleMouseDown = (e: MouseEvent) => {
 		e.preventDefault();
 		const handle = e.currentTarget as HTMLElement | null;
@@ -157,19 +160,25 @@ function ResizeHandle(props: { onDrag: (ratio: number) => void }) {
 		const rect = splitEl.getBoundingClientRect();
 		handle?.classList.add("is-dragging");
 		document.body.classList.add("wr-noselect");
+		dragCtrl.current?.abort();
+		const ctrl = new AbortController();
+		dragCtrl.current = ctrl;
+		ctrl.signal.addEventListener("abort", () => {
+			handle?.classList.remove("is-dragging");
+			document.body.classList.remove("wr-noselect");
+		});
 		const onMove = (mv: MouseEvent) => {
 			const offsetY = mv.clientY - rect.top;
 			const ratio = offsetY / rect.height;
 			props.onDrag(ratio);
 		};
 		const onUp = () => {
-			document.removeEventListener("mousemove", onMove);
-			document.removeEventListener("mouseup", onUp);
-			handle?.classList.remove("is-dragging");
-			document.body.classList.remove("wr-noselect");
+			ctrl.abort();
 		};
-		document.addEventListener("mousemove", onMove);
-		document.addEventListener("mouseup", onUp);
+		document.addEventListener("mousemove", onMove, {
+			signal: ctrl.signal,
+		});
+		document.addEventListener("mouseup", onUp, { signal: ctrl.signal });
 	};
 	return (
 		<div
