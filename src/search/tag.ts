@@ -329,6 +329,8 @@ export function tagSearch(
 		const rawScore = scores.get(path) ?? 0;
 		if (rawScore === 0) continue;
 		const weight = Number(row[2]);
+		// weight 0 = 검색 제외 의도 — 경량 재적용(reapply) 직후에도 결과에 노출되지 않게.
+		if (weight === 0) continue;
 		candidates.push({
 			path,
 			categoryId: String(row[1]),

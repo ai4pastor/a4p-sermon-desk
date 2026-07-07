@@ -124,7 +124,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 				"▶ 지금 할 일: ‘📂 검색 대상 폴더’의 [전체 재색인] 버튼을 누르세요. (노트를 읽어 들이는 과정이라 몇 분 걸릴 수 있습니다)";
 		} else {
 			now =
-				"✅ 검색 준비 완료! 이제 노트를 작성하면 관련 자료가 옆 패널에 자동으로 추천됩니다. (명령 팔레트 → ‘Open Recall pane’)";
+				"✅ 검색 준비 완료! 노트에서 텍스트를 선택하고 우클릭 → ‘선택 텍스트로 참고자료 검색’을 누르면 관련 자료가 옆 패널에 추천됩니다. (패널 열기: 명령 팔레트 → ‘설교 준비 데스크 열기’)";
 		}
 		box.createEl("p", { text: now, cls: "setting-item-description" });
 
@@ -187,6 +187,20 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 
 	private renderPerformance(containerEl: HTMLElement): void {
 		containerEl.createEl("h3", { text: "⚡ 성능" });
+		new Setting(containerEl)
+			.setName("실시간 자동 검색")
+			.setDesc(
+				"끄기(기본): 텍스트를 선택하고 우클릭 → ‘선택 텍스트로 참고자료 검색’으로만 검색합니다. 켜기: 노트를 편집하거나 텍스트를 선택할 때마다 자동으로 검색합니다. 검색마다 임베딩 API 호출이 일어날 수 있어 다소 무겁습니다.",
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.autoSearch)
+					.onChange(async (value) => {
+						this.plugin.settings.autoSearch = value;
+						await this.plugin.saveSettings();
+						this.plugin.refreshRecallViewsUI();
+					});
+			});
 		new Setting(containerEl)
 			.setName("검색 결과를 미리 펼쳐둘까요? (Eager 렌더)")
 			.setDesc(

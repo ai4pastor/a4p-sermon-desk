@@ -30,11 +30,13 @@ import {
 import { embedTexts, EMBEDDING_MODEL } from "../embedder/openai";
 import { renderHitList, unmountHitList } from "./HitList";
 
+declare const __DEV__: boolean;
+
 export const RECALL_VIEW_TYPE = "a4p-sermon-desk-view";
 
 const DEBOUNCE_MS = 2500;
 const TOP_N = 10;
-const MIN_PARAGRAPH_CHARS = 10;
+export const MIN_PARAGRAPH_CHARS = 10;
 const SELECTION_POLL_MS = 250;
 
 export interface RecallViewHost {
@@ -204,7 +206,7 @@ export class RecallView extends ItemView {
 			this.checkSelection();
 		}, SELECTION_POLL_MS);
 
-		this.scheduleRefresh();
+		this.updateAutoSearchUI();
 	}
 
 	async onClose(): Promise<void> {
@@ -217,12 +219,19 @@ export class RecallView extends ItemView {
 			window.clearTimeout(this.suppressTimer);
 			this.suppressTimer = null;
 		}
+		if (this.relevanceSaveTimer !== null) {
+			window.clearTimeout(this.relevanceSaveTimer);
+			this.relevanceSaveTimer = null;
+			// 대기 중이던 저장을 flush — 뷰를 빨리 닫아도 임계값 변경이 유실되지 않게.
+			void this.host.saveSettings();
+		}
 		if (this.mountEl) {
 			unmountHitList(this.mountEl);
 		}
 	}
 
 	private checkSelection(): void {
+		if (!this.host.settings.autoSearch) return;
 		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
 		const sel = view?.editor.getSelection() ?? "";
 		if (sel !== this.lastSelection) {
@@ -232,6 +241,7 @@ export class RecallView extends ItemView {
 	}
 
 	private scheduleRefresh(): void {
+		if (!this.host.settings.autoSearch) return;
 		if (this.paused) return;
 		const active = this.app.workspace.getActiveFile();
 		if (active) {
@@ -260,6 +270,29 @@ export class RecallView extends ItemView {
 
 	manualRefresh(): void {
 		void this.refresh({ manual: true });
+	}
+
+	/** 우클릭 메뉴 등 외부 트리거용 — 캡처된 선택 텍스트로 즉시 검색. */
+	searchWithText(text: string, file: TFile): void {
+		this.lastQueryCtx = { text, mode: "selection", filePath: file.path };
+		void this.refresh({
+			manual: true,
+			query: { text, mode: "selection" },
+			file,
+		});
+	}
+
+	/** autoSearch 설정 변화를 뷰에 반영 (설정 탭 토글·뷰 열기 시 호출). */
+	updateAutoSearchUI(): void {
+		const auto = this.host.settings.autoSearch;
+		this.pauseToggleEl?.toggle(auto);
+		if (auto) {
+			this.scheduleRefresh();
+		} else if (!this.getCurrentRender()) {
+			this.setStatus(
+				"수동 검색 모드 — 텍스트를 선택하고 우클릭 → '선택 텍스트로 참고자료 검색'을 누르세요.",
+			);
+		}
 	}
 
 	private updatePauseUI(): void {
@@ -407,7 +440,9 @@ export class RecallView extends ItemView {
 		}
 	}
 
-	private async refresh(opts: { manual?: boolean } = {}): Promise<void> {
+	private async refresh(
+		opts: { manual?: boolean; query?: QueryContext; file?: TFile } = {},
+	): Promise<void> {
 		const gen = ++this.refreshGen;
 		const db = this.host.db;
 		if (!db) {
@@ -425,7 +460,7 @@ export class RecallView extends ItemView {
 			return;
 		}
 
-		const file = this.app.workspace.getActiveFile();
+		const file = opts.file ?? this.app.workspace.getActiveFile();
 		if (!file || !(file instanceof TFile) || file.extension !== "md") {
 			this.clearList();
 			this.setStatus("활성 마크다운 노트가 없습니다");
@@ -445,7 +480,7 @@ export class RecallView extends ItemView {
 		}
 		this.currentTrackedPath = file.path;
 
-		const ctx = this.resolveQuery();
+		const ctx = opts.query ?? this.resolveQuery();
 		if (!ctx) {
 			if (this.getCurrentRender()) {
 				this.setStatus(
@@ -504,9 +539,11 @@ export class RecallView extends ItemView {
 		const filtered = rawHits.filter((h) => h.notePath !== file.path);
 		const deduped = this.dedupeHits(filtered).slice(0, TOP_N);
 		if (gen !== this.refreshGen) return;
-		console.log(
-			`[a4p-sermon-desk][view] mode=${ctx.mode} query="${file.basename}" qchars=${ctx.text.length} terms=${queryTerms.length} vector=${queryEmbedding ? "yes" : "no"} → ${deduped.length} hits in ${ms.toFixed(1)}ms (raw=${rawHits.length})`,
-		);
+		if (__DEV__) {
+			console.log(
+				`[a4p-sermon-desk][view] mode=${ctx.mode} query="${file.basename}" qchars=${ctx.text.length} terms=${queryTerms.length} vector=${queryEmbedding ? "yes" : "no"} → ${deduped.length} hits in ${ms.toFixed(1)}ms (raw=${rawHits.length})`,
+			);
+		}
 		this.renderHits({ hits: deduped, queryTerms, mode: ctx.mode });
 	}
 
@@ -593,9 +630,11 @@ export class RecallView extends ItemView {
 		const hits = this.dedupeHits(rawHits).slice(0, TOP_N);
 		const ms = performance.now() - t0;
 		if (gen !== this.refreshGen) return;
-		console.log(
-			`[a4p-sermon-desk][view] tag-mode dExact=[${[...keys.dExact].join(",")}] dSyn=[${[...keys.dSyn].join(",")}] dVec=[${[...keys.dVec].join(",")}] tExact=[${[...keys.tExact].join(",")}] tVec=[${[...keys.tVec].join(",")}] → ${hits.length} hits in ${ms.toFixed(1)}ms`,
-		);
+		if (__DEV__) {
+			console.log(
+				`[a4p-sermon-desk][view] tag-mode dExact=[${[...keys.dExact].join(",")}] dSyn=[${[...keys.dSyn].join(",")}] dVec=[${[...keys.dVec].join(",")}] tExact=[${[...keys.tExact].join(",")}] tVec=[${[...keys.tVec].join(",")}] → ${hits.length} hits in ${ms.toFixed(1)}ms`,
+			);
+		}
 		this.renderHits({
 			hits,
 			queryTerms: [...allKeys],
@@ -769,9 +808,11 @@ export class RecallView extends ItemView {
 	}
 
 	private canonicalTitle(t: string): string {
+		// 사본 접미어만 접는다. 단순 "공백+숫자"를 접으면
+		// "시편 23"/"시편 100" 같은 정당한 시리즈 노트가 하나로 합쳐진다.
 		return t
-			.replace(/\s+\d+$/, "")
 			.replace(/\s+복사본(\s+\d+)?$/, "")
+			.replace(/\s+copy(\s+\d+)?$/i, "")
 			.trim();
 	}
 

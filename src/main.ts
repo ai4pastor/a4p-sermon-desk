@@ -16,7 +16,11 @@ import { embedMissingChunks } from "./embedder/embed-all";
 import { embedTexts } from "./embedder/openai";
 import { bm25Search } from "./search/bm25";
 import { hybridSearch } from "./search/hybrid";
-import { RecallView, RECALL_VIEW_TYPE } from "./views/RecallView";
+import {
+	RecallView,
+	RECALL_VIEW_TYPE,
+	MIN_PARAGRAPH_CHARS,
+} from "./views/RecallView";
 import { WR_STYLES } from "./views/styles";
 import {
 	tokenize,
@@ -63,35 +67,49 @@ export default class WeightedRecallPlugin extends Plugin {
 			id: "open-recall-pane",
 			name: "설교 준비 데스크 열기",
 			callback: async () => {
-				const { workspace } = this.app;
-				let leaf = workspace.getLeavesOfType(RECALL_VIEW_TYPE)[0];
-				if (!leaf) {
-					const right = workspace.getRightLeaf(false);
-					if (right) {
-						leaf = right;
-						await leaf.setViewState({
-							type: RECALL_VIEW_TYPE,
-							active: true,
-						});
-					}
-				}
-				if (leaf) workspace.revealLeaf(leaf);
+				await this.openRecallView(true);
 			},
 		});
 
+		this.registerEvent(
+			this.app.workspace.on("editor-menu", (menu, editor, info) => {
+				const file = info.file;
+				if (!file) return;
+				// 메뉴 빌드 시점에 선택 텍스트를 캡처 — 뷰를 여는 동안
+				// active leaf가 바뀌어도 검색 쿼리가 흔들리지 않는다.
+				const sel = editor.getSelection().trim();
+				if (sel.length < MIN_PARAGRAPH_CHARS) return;
+				menu.addItem((item) =>
+					item
+						.setTitle("선택 텍스트로 참고자료 검색")
+						.setIcon("search")
+						.onClick(async () => {
+							const view = await this.openRecallView(false);
+							view?.searchWithText(sel, file);
+						}),
+				);
+			}),
+		);
+
 		this.db = await loadOrCreateDb(this);
-		const v = this.db.exec("SELECT value FROM meta WHERE key='schema_version'");
-		const version = v[0]?.values[0]?.[0] ?? "?";
-		console.log(`[a4p-sermon-desk] db loaded, schema=${version}`);
+		if (__DEV__) {
+			const v = this.db.exec(
+				"SELECT value FROM meta WHERE key='schema_version'",
+			);
+			const version = v[0]?.values[0]?.[0] ?? "?";
+			console.log(`[a4p-sermon-desk] db loaded, schema=${version}`);
+		}
 
 		// 설정 마이그레이션이 일어났다면, 기존 인덱스의 그룹/가중치를 비파괴적으로 재적용
 		if (this.migratedThisLoad) {
 			try {
 				const r = reapplyFolderSettings(this.db, this.settings);
 				await this.persistDb();
-				console.log(
-					`[a4p-sermon-desk] 마이그레이션 후 폴더 재적용: ${r.updated} notes`,
-				);
+				if (__DEV__) {
+					console.log(
+						`[a4p-sermon-desk] 마이그레이션 후 폴더 재적용: ${r.updated} notes`,
+					);
+				}
 			} catch (e) {
 				console.error(
 					"[a4p-sermon-desk] post-migration reapply failed",
@@ -339,7 +357,37 @@ export default class WeightedRecallPlugin extends Plugin {
 
 		} // end DEV-only debug commands
 
-		console.log("[a4p-sermon-desk] loaded BUILD=v11-a4p-rename");
+		if (__DEV__) {
+			console.log("[a4p-sermon-desk] loaded BUILD=v11-a4p-rename");
+		}
+	}
+
+	/** 오른쪽 패널의 RecallView를 찾거나 생성해 드러낸다. */
+	private async openRecallView(focus: boolean): Promise<RecallView | null> {
+		const { workspace } = this.app;
+		let leaf = workspace.getLeavesOfType(RECALL_VIEW_TYPE)[0];
+		if (!leaf) {
+			const right = workspace.getRightLeaf(false);
+			if (!right) return null;
+			leaf = right;
+			await leaf.setViewState({
+				type: RECALL_VIEW_TYPE,
+				active: focus,
+			});
+		}
+		workspace.revealLeaf(leaf);
+		return leaf.view instanceof RecallView ? leaf.view : null;
+	}
+
+	/** autoSearch 설정 변경을 열린 뷰들에 즉시 반영 (설정 탭에서 호출). */
+	refreshRecallViewsUI(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(
+			RECALL_VIEW_TYPE,
+		)) {
+			if (leaf.view instanceof RecallView) {
+				leaf.view.updateAutoSearchUI();
+			}
+		}
 	}
 
 	private async withBusy(fn: () => Promise<void>): Promise<void> {
@@ -390,9 +438,11 @@ export default class WeightedRecallPlugin extends Plugin {
 					`A4P Sermon Desk: 임베딩 ${r.embedded}개 완료`,
 				);
 			}
-			console.log(
-				`[a4p-sermon-desk] embed done: ${r.embedded} chunks`,
-			);
+			if (__DEV__) {
+				console.log(
+					`[a4p-sermon-desk] embed done: ${r.embedded} chunks`,
+				);
+			}
 		} catch (e) {
 			progress.hide();
 			new Notice(
@@ -417,7 +467,9 @@ export default class WeightedRecallPlugin extends Plugin {
 			this.styleEl.remove();
 			this.styleEl = null;
 		}
-		console.log("[a4p-sermon-desk] unloaded");
+		if (__DEV__) {
+			console.log("[a4p-sermon-desk] unloaded");
+		}
 	}
 
 	async loadSettings() {
@@ -427,9 +479,11 @@ export default class WeightedRecallPlugin extends Plugin {
 			this.settings = normalizeSettings(flat);
 			this.migratedThisLoad = true;
 			await this.saveSettings();
-			console.log(
-				"[a4p-sermon-desk] 카테고리 → 평면 폴더 모델로 마이그레이션됨",
-			);
+			if (__DEV__) {
+				console.log(
+					"[a4p-sermon-desk] 카테고리 → 평면 폴더 모델로 마이그레이션됨",
+				);
+			}
 			return;
 		}
 		if (isValidSettings(data)) {
@@ -446,13 +500,15 @@ export default class WeightedRecallPlugin extends Plugin {
 			this.settings = normalizeSettings(legacy);
 			this.migratedThisLoad = true;
 			await this.saveSettings();
-			console.log(
-				"[a4p-sermon-desk] 초레거시 folderWeights 마이그레이션됨",
-			);
+			if (__DEV__) {
+				console.log(
+					"[a4p-sermon-desk] 초레거시 folderWeights 마이그레이션됨",
+				);
+			}
 			return;
 		}
 		if (data) {
-			console.log(
+			console.warn(
 				"[a4p-sermon-desk] 알 수 없는 설정 형식, 기본값으로 초기화",
 			);
 		}

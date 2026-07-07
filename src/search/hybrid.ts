@@ -116,11 +116,14 @@ export function hybridSearch(
 	const rows = db.exec(
 		`SELECT c.id, c.note_path, c.heading, SUBSTR(c.text, 1, 80), c.text, n.category_id, n.weight
 		 FROM chunks c JOIN notes n ON c.note_path = n.path
-		 WHERE c.id IN (${placeholders})`,
+		 WHERE c.id IN (${placeholders}) AND n.weight > 0`,
 		chunkIds,
 	);
 
 	const matchedMap = new Map<number, number>();
+	// 볼트에 아예 없는(df=0) 쿼리 토큰 수 — required 계산에서 제외해
+	// 미색인 신조어 하나 때문에 유효 결과가 전멸하는 것을 방지.
+	let effectiveTerms = uniqueTerms.length;
 	if (uniqueTerms.length > 0) {
 		const termPlaceholders = uniqueTerms.map(() => "?").join(",");
 		const matchRes = db.exec(
@@ -136,6 +139,12 @@ export function hybridSearch(
 				matchedMap.set(Number(row[0]), Number(row[1]));
 			}
 		}
+		const dfRes = db.exec(
+			`SELECT COUNT(DISTINCT term) FROM chunk_terms
+			 WHERE term IN (${termPlaceholders})`,
+			uniqueTerms,
+		);
+		effectiveTerms = dfRes[0] ? Number(dfRes[0].values[0][0]) : 0;
 	}
 
 	const hits: HybridHit[] = [];
@@ -151,8 +160,13 @@ export function hybridSearch(
 			const entry = rrfMap.get(chunkId);
 			if (!entry) continue;
 
-			const headingMatched = heading
-				? queryTerms.some((t) => t.length > 0 && heading.includes(t))
+			// 토큰은 소문자화되므로 heading도 소문자로 비교. 1글자 토큰은
+			// 부분문자열 과매칭("물"⊂"물음")이 잦아 부스트에서 제외.
+			const headingLower = heading ? heading.toLowerCase() : null;
+			const headingMatched = headingLower
+				? queryTerms.some(
+						(t) => t.length >= 2 && headingLower.includes(t),
+					)
 				: false;
 
 			const matched = matchedMap.get(chunkId) ?? 0;
@@ -190,7 +204,7 @@ export function hybridSearch(
 	}
 
 	const filtered = hits.filter((h) => {
-		const required = Math.min(MIN_REQUIRED_MATCH, h.queryTermsTotal);
+		const required = Math.min(MIN_REQUIRED_MATCH, effectiveTerms);
 		return (
 			h.matchedQueryTerms >= required ||
 			(h.vectorScore !== null && h.vectorScore >= VECTOR_NOISE_THRESHOLD)

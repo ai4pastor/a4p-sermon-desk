@@ -139,7 +139,10 @@ export async function runFullIndex(
 				timings.insertChunkMs += performance.now() - t;
 
 				t = performance.now();
-				const terms = await tokenize(chunkText);
+				// heading도 검색 대상에 포함 — 주제어가 제목에만 있는 노트 누락 방지.
+				const terms = await tokenize(
+					chunk.heading ? `${chunk.heading}\n${chunkText}` : chunkText,
+				);
 				const dt = performance.now() - t;
 				timings.morphemeMs += dt;
 				chunkMorphemeMs.push(dt);

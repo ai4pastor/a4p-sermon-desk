@@ -53,7 +53,7 @@ export function getMissingChunks(
 	model: string,
 ): MissingChunk[] {
 	const stmt = db.prepare(
-		`SELECT c.id, c.text FROM chunks c
+		`SELECT c.id, c.heading, c.text FROM chunks c
 		 LEFT JOIN embeddings e ON e.chunk_id = c.id AND e.model = ?
 		 WHERE e.chunk_id IS NULL AND length(trim(c.text)) > 0
 		 ORDER BY c.id`,
@@ -62,8 +62,12 @@ export function getMissingChunks(
 	try {
 		stmt.bind([model]);
 		while (stmt.step()) {
-			const row = stmt.get() as [number, string];
-			out.push({ id: row[0], text: row[1] });
+			const row = stmt.get() as [number, string | null, string];
+			// heading을 임베딩 입력에 포함 — 주제어가 제목에만 있는 청크의 의미 검색 누락 방지.
+			out.push({
+				id: row[0],
+				text: row[1] ? `${row[1]}\n${row[2]}` : row[2],
+			});
 		}
 	} finally {
 		stmt.free();

@@ -15,6 +15,8 @@ export interface WeightedRecallSettings {
 	excludedFolders: string[];
 	openaiApiKey: string;
 	searchMode: SearchMode;
+	/** true면 편집·선택 시 실시간 자동 검색. false(기본)면 우클릭 메뉴 등 수동 트리거만. */
+	autoSearch: boolean;
 	eagerRender: boolean;
 	relevanceThreshold: number;
 	doctrineRaw: string;
@@ -58,6 +60,7 @@ export const DEFAULT_SETTINGS: WeightedRecallSettings = {
 	excludedFolders: [".trash/"],
 	openaiApiKey: "",
 	searchMode: "semantic",
+	autoSearch: false,
 	eagerRender: false,
 	relevanceThreshold: 10,
 	doctrineRaw: "",
@@ -152,6 +155,7 @@ export function migrateToFlat(data: unknown): WeightedRecallSettings | null {
 			: [...DEFAULT_SETTINGS.excludedFolders],
 		openaiApiKey: typeof d.openaiApiKey === "string" ? d.openaiApiKey : "",
 		searchMode: d.searchMode === "tag" ? "tag" : "semantic",
+		autoSearch: d.autoSearch === true,
 		eagerRender: typeof d.eagerRender === "boolean" ? d.eagerRender : false,
 		relevanceThreshold: clampThreshold(d.relevanceThreshold),
 		doctrineRaw: typeof d.doctrineRaw === "string" ? d.doctrineRaw : "",
@@ -190,6 +194,7 @@ export function migrateLegacySettings(
 			: [...DEFAULT_SETTINGS.excludedFolders],
 		openaiApiKey: typeof d.openaiApiKey === "string" ? d.openaiApiKey : "",
 		searchMode: "semantic",
+		autoSearch: false,
 		eagerRender: false,
 		relevanceThreshold: 10,
 		doctrineRaw: "",
@@ -250,6 +255,7 @@ export function normalizeSettings(
 				? settings.openaiApiKey
 				: "",
 		searchMode: settings.searchMode === "tag" ? "tag" : "semantic",
+		autoSearch: settings.autoSearch === true,
 		eagerRender:
 			typeof settings.eagerRender === "boolean"
 				? settings.eagerRender
