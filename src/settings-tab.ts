@@ -90,6 +90,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 		});
 		this.renderDoctrineKeywords(containerEl);
 		this.renderDoctrineSynonyms(containerEl);
+		this.renderDoctrineEmbedding(containerEl);
 		this.renderTagEmbeddings(containerEl);
 
 		this.renderPerformance(containerEl);
@@ -218,7 +219,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 
 	private renderDoctrineKeywords(containerEl: HTMLElement): void {
 		containerEl.createEl("h3", {
-			text: "✝️ ① 신학 분류 키워드 (DOCTRINE)",
+			text: "✝️ ① 신학 분류 키워드 등록 (DOCTRINE)",
 		});
 		containerEl.createEl("p", {
 			text: "본인의 DOCTRINE 분류 트리를 아래 박스에 붙여넣으세요. 위키링크 [[키워드]] 또는 큰따옴표 \"키워드\" 형식을 인식하고, 이모지 prefix(🔖 등)는 자동 제거됩니다. 태그 검색에서 의미적으로 가까운 키워드까지 매치하기 위한 어휘로 쓰입니다 (다음 단계에서 임베딩).",
@@ -248,7 +249,33 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 			text: "키워드를 추가·수정·삭제하려면 위 글상자를 고치고 ‘분석’을 누르세요.",
 		});
 		containerEl.createEl("p", {
-			text: "💡 키워드를 바꿨다면: ‘① 키워드 분석’ → ‘② 동의어 생성’ → ‘③ 교리 키워드 임베딩’ 순서로 누르면 최신 상태가 됩니다.",
+			text: "💡 키워드를 바꿨다면: 아래 ‘① 키워드 분석’ → ‘② 동의어 생성’ → ‘③ 교리 키워드 임베딩’ 순서로 위에서 아래로 누르면 최신 상태가 됩니다.",
+			cls: "setting-item-description",
+		});
+
+		new Setting(containerEl).addButton((btn: ButtonComponent) => {
+			btn.setButtonText("① 키워드 분석")
+				.setCta()
+				.onClick(async () => {
+					const raw = ta.value;
+					const parsed = parseDoctrineRaw(raw);
+					this.plugin.settings.doctrineRaw = raw;
+					this.plugin.settings.doctrineKeywords = parsed;
+					await this.plugin.saveSettings();
+					new Notice(
+						`A4P Sermon Desk: ${parsed.length}개 키워드 인식됨`,
+					);
+					this.display();
+				});
+		});
+	}
+
+	private renderDoctrineEmbedding(containerEl: HTMLElement): void {
+		containerEl.createEl("h3", {
+			text: "🧠 ③ 교리 키워드 임베딩",
+		});
+		containerEl.createEl("p", {
+			text: "①의 키워드와 ②의 동의어를 묶어 임베딩합니다. 검색 시 본문 표현이 키워드와 달라도 의미가 가까우면 해당 교리로 매치됩니다. 키워드나 동의어를 바꿨다면 다시 누르세요 — 실행할 때마다 전체를 새로 만듭니다.",
 			cls: "setting-item-description",
 		});
 
@@ -282,69 +309,59 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 			if (!embedBtn) return;
 			// 동의어 포함 임베딩이라 매번 전체 재생성 — pending과 무관하게 활성.
 			const { total, db } = computeCounts();
-			embedBtn
-				.setButtonText("③ 교리 키워드 임베딩 (전체 갱신)")
-				.setDisabled(total === 0 || !db);
+			if (total === 0) {
+				embedBtn
+					.setButtonText("③ 임베딩 — 먼저 ① 키워드 분석")
+					.setDisabled(true);
+			} else {
+				embedBtn
+					.setButtonText("③ 교리 키워드 임베딩 (전체 갱신)")
+					.setDisabled(!db);
+			}
 		};
 		updateStatus();
 
-		new Setting(containerEl)
-			.addButton((btn: ButtonComponent) => {
-				btn.setButtonText("① 키워드 분석")
-					.setCta()
-					.onClick(async () => {
-						const raw = ta.value;
-						const parsed = parseDoctrineRaw(raw);
-						this.plugin.settings.doctrineRaw = raw;
-						this.plugin.settings.doctrineKeywords = parsed;
-						await this.plugin.saveSettings();
+		new Setting(containerEl).addButton((btn: ButtonComponent) => {
+			embedBtn = btn;
+			refreshBtn();
+			btn.onClick(async () => {
+				const db = this.plugin.db;
+				if (!db) return;
+				const apiKey = this.plugin.settings.openaiApiKey;
+				btn.setDisabled(true);
+				try {
+					const res = await embedDoctrineKeys(
+						db,
+						this.plugin.settings.doctrineKeywords,
+						apiKey,
+						this.plugin.settings.doctrineSynonyms,
+						(p: LexiconProgress) => {
+							btn.setButtonText(`임베딩 중 ${p.done}/${p.total}`);
+							card.setState("running", {
+								done: p.done,
+								total: p.total,
+							});
+						},
+					);
+					await this.plugin.persistDb();
+					new Notice(
+						`DOCTRINE 임베딩 완료: ${res.embedded}개 재생성`,
+					);
+				} catch (e) {
+					if (e instanceof MissingApiKeyError) {
+						new Notice(e.message);
+					} else {
+						console.error("[a4p-sermon-desk] doctrine embed", e);
 						new Notice(
-							`A4P Sermon Desk: ${parsed.length}개 키워드 인식됨`,
+							`DOCTRINE 임베딩 실패: ${e instanceof Error ? e.message : String(e)}`,
 						);
-						this.display();
-					});
-			})
-			.addButton((btn: ButtonComponent) => {
-				embedBtn = btn;
-				refreshBtn();
-				btn.onClick(async () => {
-					const db = this.plugin.db;
-					if (!db) return;
-					const apiKey = this.plugin.settings.openaiApiKey;
-					btn.setDisabled(true);
-					try {
-						const res = await embedDoctrineKeys(
-							db,
-							this.plugin.settings.doctrineKeywords,
-							apiKey,
-							this.plugin.settings.doctrineSynonyms,
-							(p: LexiconProgress) => {
-								btn.setButtonText(`임베딩 중 ${p.done}/${p.total}`);
-								card.setState("running", {
-									done: p.done,
-									total: p.total,
-								});
-							},
-						);
-						await this.plugin.persistDb();
-						new Notice(
-							`DOCTRINE 임베딩 완료: ${res.embedded}개 재생성`,
-						);
-					} catch (e) {
-						if (e instanceof MissingApiKeyError) {
-							new Notice(e.message);
-						} else {
-							console.error("[a4p-sermon-desk] doctrine embed", e);
-							new Notice(
-								`DOCTRINE 임베딩 실패: ${e instanceof Error ? e.message : String(e)}`,
-							);
-						}
-					} finally {
-						updateStatus();
-						refreshBtn();
 					}
-				});
+				} finally {
+					updateStatus();
+					refreshBtn();
+				}
 			});
+		});
 	}
 
 	private renderDoctrineSynonyms(containerEl: HTMLElement): void {
