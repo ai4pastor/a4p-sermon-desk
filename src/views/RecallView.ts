@@ -29,6 +29,7 @@ import {
 } from "../db/embeddings";
 import { embedTexts, EMBEDDING_MODEL } from "../embedder/openai";
 import { renderHitList, unmountHitList } from "./HitList";
+import { NotePopupModal } from "./NotePopupModal";
 
 declare const __DEV__: boolean;
 
@@ -722,6 +723,15 @@ export class RecallView extends ItemView {
 				onTabChange: (tab) => this.setActiveTab(tab),
 				onPinResize: (r) => this.setPinRatio(r),
 				onOpenNote: (h) => this.openHit(h),
+				onOpenPopup: (h) =>
+					new NotePopupModal(
+						{
+							app: this.app,
+							openHit: (hit, pane) => this.openHit(hit, pane),
+							insertLink: (hit) => this.insertLink(hit),
+						},
+						h,
+					).open(),
 			});
 		}
 		const label = this.modeLabel(state.mode);
@@ -838,7 +848,10 @@ export class RecallView extends ItemView {
 		return [...byTitle.values()].sort((a, b) => b.finalScore - a.finalScore);
 	}
 
-	private async openHit(hit: HybridHit): Promise<void> {
+	private async openHit(
+		hit: HybridHit,
+		pane: "split" | "tab" = "split",
+	): Promise<void> {
 		const target = normalizePath(hit.notePath).normalize("NFC");
 		this.suppressAutoRefreshPath = target;
 		if (this.suppressTimer !== null) {
@@ -850,7 +863,7 @@ export class RecallView extends ItemView {
 			}
 			this.suppressTimer = null;
 		}, 800);
-		await this.app.workspace.openLinkText(hit.notePath, "", "split");
+		await this.app.workspace.openLinkText(hit.notePath, "", pane);
 	}
 
 	private getSourcePath(): string {

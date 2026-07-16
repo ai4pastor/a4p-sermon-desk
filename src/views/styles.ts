@@ -669,4 +669,106 @@ export const WR_STYLES = `
 	color: var(--text-accent);
 	min-width: 4em;
 }
+
+/* ===== 팝업 보기 (Modal) ===== */
+.wr-popup-btn {
+	padding: 4px 10px;
+	font-size: 11px;
+	background: var(--background-secondary);
+	color: var(--text-normal);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	cursor: pointer;
+	transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.wr-popup-btn:hover {
+	background: var(--background-modifier-hover);
+	border-color: var(--background-modifier-border-hover);
+}
+.wr-popup {
+	max-width: 760px;
+	width: 90vw;
+}
+.wr-popup-header {
+	margin-bottom: 8px;
+}
+.wr-popup-title-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+.wr-popup-title {
+	font-weight: 700;
+	font-size: var(--font-ui-large);
+	color: var(--text-normal);
+}
+.wr-popup-chip {
+	padding: 1px 8px;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	background: var(--background-modifier-hover);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 12px;
+}
+.wr-popup-path {
+	margin-top: 2px;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
+.wr-popup-actions {
+	display: flex;
+	gap: 6px;
+	flex-wrap: wrap;
+	align-items: center;
+	padding-bottom: 8px;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+.wr-popup-actions button {
+	padding: 4px 10px;
+	font-size: var(--font-ui-smaller);
+	background: var(--background-secondary);
+	color: var(--text-normal);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	cursor: pointer;
+	transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+.wr-popup-actions button:hover {
+	background: var(--background-modifier-hover);
+	border-color: var(--background-modifier-border-hover);
+}
+.wr-popup-actions button.wr-open-btn {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	border: none;
+	transition: opacity 0.12s ease;
+}
+.wr-popup-actions button.wr-open-btn:hover {
+	opacity: 0.85;
+	background: var(--interactive-accent);
+}
+.wr-popup-body {
+	max-height: 68vh;
+	overflow-y: auto;
+	margin-top: 8px;
+	padding: 4px 8px 12px 2px;
+	font-size: var(--font-ui-small);
+	line-height: 1.6;
+}
+.wr-popup-anchor {
+	background: var(--text-highlight-bg, rgba(255, 208, 0, 0.35));
+	border-radius: 2px;
+}
+@keyframes wr-flash-anim {
+	0% {
+		box-shadow: 0 0 0 4px var(--interactive-accent);
+	}
+	100% {
+		box-shadow: 0 0 0 4px transparent;
+	}
+}
+.wr-flash {
+	animation: wr-flash-anim 1.5s ease-out 1;
+}
 `;

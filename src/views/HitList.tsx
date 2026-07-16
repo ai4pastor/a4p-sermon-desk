@@ -24,6 +24,7 @@ export interface HitListProps {
 	onTabChange: (tab: GroupId) => void;
 	onPinResize: (ratio: number) => void;
 	onOpenNote?: (hit: HybridHit) => void;
+	onOpenPopup?: (hit: HybridHit) => void;
 }
 
 export function renderHitList(
@@ -70,6 +71,7 @@ function HitList(props: HitListProps) {
 			onInsertLink={() => props.onInsertLink(h)}
 			onDragLink={(e) => props.onDragLink(e, h)}
 			onOpenNote={props.onOpenNote}
+			onOpenPopup={props.onOpenPopup}
 		/>
 	);
 	const hasPin = pinnedHits.length > 0;
@@ -204,6 +206,7 @@ function HitCard(props: {
 	onInsertLink: () => void;
 	onDragLink: (e: DragEvent) => void;
 	onOpenNote?: (h: HybridHit) => void;
+	onOpenPopup?: (h: HybridHit) => void;
 }) {
 	const {
 		rank,
@@ -220,6 +223,7 @@ function HitCard(props: {
 		onInsertLink,
 		onDragLink,
 		onOpenNote,
+		onOpenPopup,
 	} = props;
 
 	const flags: string[] = [];
@@ -283,6 +287,17 @@ function HitCard(props: {
 								}}
 							>
 								노트 열기 →
+							</button>
+						) : null}
+						{onOpenPopup ? (
+							<button
+								class="wr-popup-btn"
+								onClick={(e) => {
+									e.stopPropagation();
+									onOpenPopup(hit);
+								}}
+							>
+								🔍 팝업 보기
 							</button>
 						) : null}
 						<button
