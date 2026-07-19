@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
 	DEFAULT_SETTINGS,
+	DEFAULT_CHAT_MODEL,
+	DEFAULT_CHAT_TOP_K,
+	clampChatTopK,
 	clampWeight10,
 	weightToInternal,
 	internalToWeight10,
@@ -142,6 +145,17 @@ describe("마이그레이션", () => {
 		]);
 		expect(out?.autoSearch).toBe(false);
 	});
+
+	it("마이그레이션 결과에 chatModel 기본값이 포함된다", () => {
+		const flat = migrateToFlat({
+			settingsVersion: 1,
+			categories: [],
+			folders: [],
+		});
+		expect(flat?.chatModel).toBe(DEFAULT_CHAT_MODEL);
+		const legacy = migrateLegacySettings({ folderWeights: [] });
+		expect(legacy?.chatModel).toBe(DEFAULT_CHAT_MODEL);
+	});
 });
 
 describe("normalizeSettings", () => {
@@ -161,5 +175,26 @@ describe("normalizeSettings", () => {
 		expect(out.folders).toEqual([
 			{ path: "A/", groupId: "external", weight: 10 },
 		]);
+	});
+
+	it("chatTopK를 3~20 정수로 클램프한다", () => {
+		expect(clampChatTopK(1)).toBe(3);
+		expect(clampChatTopK(99)).toBe(20);
+		expect(clampChatTopK(12.6)).toBe(13);
+		expect(clampChatTopK(undefined)).toBe(DEFAULT_CHAT_TOP_K);
+		expect(clampChatTopK(NaN)).toBe(DEFAULT_CHAT_TOP_K);
+		const out = normalizeSettings(
+			settingsWith({ chatTopK: 999 as never }),
+		);
+		expect(out.chatTopK).toBe(20);
+	});
+
+	it("유효하지 않은 chatModel은 기본값으로 보정한다", () => {
+		const out = normalizeSettings(
+			settingsWith({ chatModel: "gpt-99" as never }),
+		);
+		expect(out.chatModel).toBe(DEFAULT_CHAT_MODEL);
+		const ok = normalizeSettings(settingsWith({ chatModel: "gpt-4o-mini" }));
+		expect(ok.chatModel).toBe("gpt-4o-mini");
 	});
 });

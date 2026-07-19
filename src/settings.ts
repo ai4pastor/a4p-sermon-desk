@@ -2,6 +2,29 @@ export type GroupId = "internal" | "external";
 
 export type SearchMode = "semantic" | "tag";
 
+export const CHAT_MODELS = [
+	"gpt-5-mini",
+	"gpt-4o-mini",
+	"gpt-4.1-mini",
+] as const;
+export type ChatModel = (typeof CHAT_MODELS)[number];
+export const DEFAULT_CHAT_MODEL: ChatModel = "gpt-5-mini";
+
+function normalizeChatModel(v: unknown): ChatModel {
+	return CHAT_MODELS.includes(v as ChatModel)
+		? (v as ChatModel)
+		: DEFAULT_CHAT_MODEL;
+}
+
+export const CHAT_TOP_K_MIN = 3;
+export const CHAT_TOP_K_MAX = 20;
+export const DEFAULT_CHAT_TOP_K = 15;
+
+export function clampChatTopK(v: unknown): number {
+	const n = typeof v === "number" && Number.isFinite(v) ? Math.round(v) : DEFAULT_CHAT_TOP_K;
+	return Math.max(CHAT_TOP_K_MIN, Math.min(CHAT_TOP_K_MAX, n));
+}
+
 export interface FolderEntry {
 	path: string;
 	groupId: GroupId;
@@ -15,6 +38,10 @@ export interface WeightedRecallSettings {
 	excludedFolders: string[];
 	openaiApiKey: string;
 	searchMode: SearchMode;
+	/** 채팅 탭(노트 기반 Q&A)에 사용할 OpenAI 모델. */
+	chatModel: ChatModel;
+	/** 채팅 답변 시 참고할 자료(청크) 최대 개수. 3~20. */
+	chatTopK: number;
 	/** true면 편집·선택 시 실시간 자동 검색. false(기본)면 우클릭 메뉴 등 수동 트리거만. */
 	autoSearch: boolean;
 	eagerRender: boolean;
@@ -60,6 +87,8 @@ export const DEFAULT_SETTINGS: WeightedRecallSettings = {
 	excludedFolders: [".trash/"],
 	openaiApiKey: "",
 	searchMode: "semantic",
+	chatModel: DEFAULT_CHAT_MODEL,
+	chatTopK: DEFAULT_CHAT_TOP_K,
 	autoSearch: false,
 	eagerRender: false,
 	relevanceThreshold: 10,
@@ -155,6 +184,8 @@ export function migrateToFlat(data: unknown): WeightedRecallSettings | null {
 			: [...DEFAULT_SETTINGS.excludedFolders],
 		openaiApiKey: typeof d.openaiApiKey === "string" ? d.openaiApiKey : "",
 		searchMode: d.searchMode === "tag" ? "tag" : "semantic",
+		chatModel: normalizeChatModel(d.chatModel),
+		chatTopK: clampChatTopK(d.chatTopK),
 		autoSearch: d.autoSearch === true,
 		eagerRender: typeof d.eagerRender === "boolean" ? d.eagerRender : false,
 		relevanceThreshold: clampThreshold(d.relevanceThreshold),
@@ -194,6 +225,8 @@ export function migrateLegacySettings(
 			: [...DEFAULT_SETTINGS.excludedFolders],
 		openaiApiKey: typeof d.openaiApiKey === "string" ? d.openaiApiKey : "",
 		searchMode: "semantic",
+		chatModel: DEFAULT_CHAT_MODEL,
+		chatTopK: DEFAULT_CHAT_TOP_K,
 		autoSearch: false,
 		eagerRender: false,
 		relevanceThreshold: 10,
@@ -255,6 +288,8 @@ export function normalizeSettings(
 				? settings.openaiApiKey
 				: "",
 		searchMode: settings.searchMode === "tag" ? "tag" : "semantic",
+		chatModel: normalizeChatModel(settings.chatModel),
+		chatTopK: clampChatTopK(settings.chatTopK),
 		autoSearch: settings.autoSearch === true,
 		eagerRender:
 			typeof settings.eagerRender === "boolean"

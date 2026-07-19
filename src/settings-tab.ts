@@ -13,6 +13,11 @@ import {
 	WEIGHT_STEP,
 	DEFAULT_WEIGHT,
 	DEFAULT_SETTINGS,
+	CHAT_MODELS,
+	type ChatModel,
+	CHAT_TOP_K_MIN,
+	CHAT_TOP_K_MAX,
+	clampChatTopK,
 	GroupId,
 	FolderEntry,
 	parseDoctrineRaw,
@@ -93,6 +98,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 		this.renderDoctrineEmbedding(containerEl);
 		this.renderTagEmbeddings(containerEl);
 
+		this.renderChat(containerEl);
 		this.renderPerformance(containerEl);
 		this.renderResetButton(containerEl);
 	}
@@ -182,6 +188,43 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 							) as HTMLInputElement | null;
 						if (input) input.type = visible ? "text" : "password";
 						btn.setIcon(visible ? "eye-off" : "eye");
+					});
+			});
+	}
+
+	private renderChat(containerEl: HTMLElement): void {
+		containerEl.createEl("h3", { text: "💬 채팅" });
+		containerEl.createEl("p", {
+			text: "데스크의 '채팅' 탭에서 노트를 근거로 질문에 답할 때 사용할 모델입니다. 위 OpenAI API 키가 필요하며, 질문 1회당 소액의 API 비용이 발생합니다.",
+			cls: "setting-item-description",
+		});
+		new Setting(containerEl)
+			.setName("채팅 모델")
+			.setDesc(
+				"gpt-5-mini(기본): 답변 품질이 좋고 질문당 약 3~5원. gpt-4o-mini: 가장 저렴(약 1~2원)하고 빠르지만 종합 능력은 다소 낮음.",
+			)
+			.addDropdown((dropdown) => {
+				for (const m of CHAT_MODELS) dropdown.addOption(m, m);
+				dropdown
+					.setValue(this.plugin.settings.chatModel)
+					.onChange(async (value) => {
+						this.plugin.settings.chatModel = value as ChatModel;
+						await this.plugin.saveSettings();
+					});
+			});
+		new Setting(containerEl)
+			.setName("참고 자료 개수")
+			.setDesc(
+				"답변할 때 노트에서 가져올 자료(구획) 최대 개수입니다. 많을수록 답변이 풍부해지지만 API 비용이 비례해서 조금 늘고 응답이 약간 느려집니다. 기본 15.",
+			)
+			.addSlider((slider) => {
+				slider
+					.setLimits(CHAT_TOP_K_MIN, CHAT_TOP_K_MAX, 1)
+					.setValue(this.plugin.settings.chatTopK)
+					.setDynamicTooltip()
+					.onChange(async (value) => {
+						this.plugin.settings.chatTopK = clampChatTopK(value);
+						await this.plugin.saveSettings();
 					});
 			});
 	}

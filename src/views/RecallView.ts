@@ -27,9 +27,24 @@ import {
 	loadAllKeyEmbeddings,
 	getKeyEmbeddingFingerprint,
 } from "../db/embeddings";
-import { embedTexts, EMBEDDING_MODEL } from "../embedder/openai";
+import {
+	embedTexts,
+	EMBEDDING_MODEL,
+	MissingApiKeyError,
+} from "../embedder/openai";
 import { renderHitList, unmountHitList } from "./HitList";
+import { renderChatPanel, unmountChatPanel } from "./ChatPanel";
+import { AnswerPopupModal } from "./AnswerPopupModal";
 import { NotePopupModal } from "./NotePopupModal";
+import {
+	MAX_CHUNKS_PER_NOTE,
+	buildContext,
+	buildChatMessages,
+	capPerNote,
+	maxContextCharsFor,
+	type ChatMessage,
+} from "../chat/rag";
+import { chatComplete } from "../chat/complete";
 
 declare const __DEV__: boolean;
 
@@ -81,6 +96,18 @@ export class RecallView extends ItemView {
 	private pauseToggleEl: HTMLButtonElement | null = null;
 	private modeSemanticEl: HTMLButtonElement | null = null;
 	private modeTagEl: HTMLButtonElement | null = null;
+	private modeChatEl: HTMLButtonElement | null = null;
+	/** 검색 ⇄ 채팅 화면 전환 (세션 전용 — 재시작 시 검색으로 시작). */
+	private viewMode: "search" | "chat" = "search";
+	private chatMountEl: HTMLElement | null = null;
+	private searchUiEls: HTMLElement[] = [];
+	private chatMessages: ChatMessage[] = [];
+	private chatLoading = false;
+	private chatLoadingText: string | null = null;
+	private chatError: string | null = null;
+	private chatAbort: AbortController | null = null;
+	/** 펼쳐 둔 과거 문답 턴 (질문 메시지 인덱스). 최신 턴은 항상 펼침. */
+	private expandedChatTurns = new Set<number>();
 	private relevanceSliderEl: HTMLInputElement | null = null;
 	private relevanceValueEl: HTMLElement | null = null;
 	private relevanceSaveTimer: number | null = null;
@@ -138,19 +165,29 @@ export class RecallView extends ItemView {
 		this.modeSemanticEl = controls.createEl("button", {
 			cls: "wr-btn-mode wr-btn-mode-semantic",
 		});
-		this.modeSemanticEl.addEventListener("click", () =>
-			void this.setSearchMode("semantic"),
-		);
+		this.modeSemanticEl.addEventListener("click", () => {
+			this.setViewMode("search");
+			void this.setSearchMode("semantic");
+		});
 		setIcon(this.modeSemanticEl, "brain");
 		this.modeSemanticEl.createSpan({ text: " 의미 검색" });
 		this.modeTagEl = controls.createEl("button", {
 			cls: "wr-btn-mode wr-btn-mode-tag",
 		});
-		this.modeTagEl.addEventListener("click", () =>
-			void this.setSearchMode("tag"),
-		);
+		this.modeTagEl.addEventListener("click", () => {
+			this.setViewMode("search");
+			void this.setSearchMode("tag");
+		});
 		setIcon(this.modeTagEl, "tag");
 		this.modeTagEl.createSpan({ text: " 태그 검색" });
+		this.modeChatEl = controls.createEl("button", {
+			cls: "wr-btn-mode wr-btn-mode-chat",
+		});
+		this.modeChatEl.addEventListener("click", () =>
+			this.setViewMode("chat"),
+		);
+		setIcon(this.modeChatEl, "message-circle");
+		this.modeChatEl.createSpan({ text: " 채팅" });
 
 		this.updatePauseUI();
 		this.updateModeUI();
@@ -191,6 +228,10 @@ export class RecallView extends ItemView {
 			cls: "wr-status",
 		});
 		this.mountEl = root.createDiv({ cls: "wr-mount" });
+		this.chatMountEl = root.createDiv({
+			cls: "wr-chat-mount wr-hidden",
+		});
+		this.searchUiEls = [relevanceRow, this.statusEl, this.mountEl];
 
 		this.registerEvent(
 			this.app.workspace.on("active-leaf-change", () => {
@@ -231,6 +272,11 @@ export class RecallView extends ItemView {
 		}
 		if (this.mountEl) {
 			unmountHitList(this.mountEl);
+		}
+		this.chatAbort?.abort();
+		this.chatAbort = null;
+		if (this.chatMountEl) {
+			unmountChatPanel(this.chatMountEl);
 		}
 	}
 
@@ -289,7 +335,7 @@ export class RecallView extends ItemView {
 	/** autoSearch 설정 변화를 뷰에 반영 (설정 탭 토글·뷰 열기 시 호출). */
 	updateAutoSearchUI(): void {
 		const auto = this.host.settings.autoSearch;
-		this.pauseToggleEl?.toggle(auto);
+		this.pauseToggleEl?.toggle(auto && this.viewMode === "search");
 		if (auto) {
 			this.scheduleRefresh();
 		} else if (!this.getCurrentRender()) {
@@ -313,6 +359,18 @@ export class RecallView extends ItemView {
 			this.pauseToggleEl.removeClass("is-paused");
 			this.pauseToggleEl.setAttr("title", "클릭하여 자동 갱신 일시정지");
 		}
+	}
+
+	setViewMode(mode: "search" | "chat"): void {
+		if (this.viewMode === mode) return;
+		this.viewMode = mode;
+		const chat = mode === "chat";
+		for (const el of this.searchUiEls) el.toggleClass("wr-hidden", chat);
+		this.chatMountEl?.toggleClass("wr-hidden", !chat);
+		// 일시정지 버튼은 검색 전용 컨트롤.
+		this.pauseToggleEl?.toggle(this.host.settings.autoSearch && !chat);
+		this.updateModeUI();
+		if (chat) this.renderChat();
 	}
 
 	async setSearchMode(mode: "semantic" | "tag"): Promise<void> {
@@ -357,23 +415,36 @@ export class RecallView extends ItemView {
 	}
 
 	private updateModeUI(): void {
+		const chat = this.viewMode === "chat";
 		const mode = this.host.settings.searchMode;
 		if (this.modeSemanticEl) {
-			this.modeSemanticEl.toggleClass("is-active", mode === "semantic");
+			this.modeSemanticEl.toggleClass(
+				"is-active",
+				!chat && mode === "semantic",
+			);
 			this.modeSemanticEl.setAttr(
 				"title",
-				mode === "semantic"
+				!chat && mode === "semantic"
 					? "의미 검색 활성"
 					: "클릭하여 의미 검색으로 전환",
 			);
 		}
 		if (this.modeTagEl) {
-			this.modeTagEl.toggleClass("is-active", mode === "tag");
+			this.modeTagEl.toggleClass("is-active", !chat && mode === "tag");
 			this.modeTagEl.setAttr(
 				"title",
-				mode === "tag"
+				!chat && mode === "tag"
 					? "태그 검색 활성"
 					: "클릭하여 태그 검색으로 전환",
+			);
+		}
+		if (this.modeChatEl) {
+			this.modeChatEl.toggleClass("is-active", chat);
+			this.modeChatEl.setAttr(
+				"title",
+				chat
+					? "채팅 활성 — 노트를 근거로 질문에 답합니다"
+					: "클릭하여 채팅으로 전환",
 			);
 		}
 	}
@@ -846,6 +917,153 @@ export class RecallView extends ItemView {
 			if (better) byTitle.set(titleKey, h);
 		}
 		return [...byTitle.values()].sort((a, b) => b.finalScore - a.finalScore);
+	}
+
+	// ── 채팅 (노트 기반 RAG) ──
+
+	private renderChat(): void {
+		if (!this.chatMountEl) return;
+		const openSourcePopup = (h: HybridHit): void =>
+			new NotePopupModal(
+				{
+					app: this.app,
+					openHit: (hit, pane) => this.openHit(hit, pane),
+					insertLink: (hit) => this.insertLink(hit),
+				},
+				h,
+			).open();
+		renderChatPanel(this.chatMountEl, {
+			messages: this.chatMessages,
+			loading: this.chatLoading,
+			loadingText: this.chatLoadingText,
+			error: this.chatError,
+			expandedTurns: this.expandedChatTurns,
+			app: this.app,
+			component: this,
+			onSend: (text) => void this.sendChatMessage(text),
+			onNewConversation: () => this.newConversation(),
+			onToggleTurn: (qIdx) => {
+				if (this.expandedChatTurns.has(qIdx)) {
+					this.expandedChatTurns.delete(qIdx);
+				} else {
+					this.expandedChatTurns.add(qIdx);
+				}
+				this.renderChat();
+			},
+			onExpandAnswer: (message) => {
+				const idx = this.chatMessages.indexOf(message);
+				const q =
+					idx > 0 && this.chatMessages[idx - 1].role === "user"
+						? this.chatMessages[idx - 1].content
+						: "";
+				new AnswerPopupModal(
+					this.app,
+					q,
+					message,
+					openSourcePopup,
+				).open();
+			},
+			onOpenSource: (h) => void this.openHit(h),
+			onOpenSourcePopup: openSourcePopup,
+		});
+	}
+
+	private newConversation(): void {
+		this.chatAbort?.abort();
+		this.chatAbort = null;
+		this.chatMessages = [];
+		this.chatLoading = false;
+		this.chatLoadingText = null;
+		this.chatError = null;
+		this.expandedChatTurns.clear();
+		this.renderChat();
+	}
+
+	private async sendChatMessage(text: string): Promise<void> {
+		if (this.chatLoading) return;
+		this.chatError = null;
+
+		const db = this.host.db;
+		if (!db) {
+			this.chatError = "DB가 로드되지 않았습니다.";
+			this.renderChat();
+			return;
+		}
+		const cntRow = db.exec("SELECT COUNT(*) FROM chunks")[0];
+		const chunkCount = cntRow ? Number(cntRow.values[0][0]) : 0;
+		if (chunkCount === 0) {
+			this.chatError =
+				"아직 인덱싱된 노트가 없습니다. 설정 탭에서 재색인을 먼저 실행해주세요.";
+			this.renderChat();
+			return;
+		}
+		const apiKey = this.host.settings.openaiApiKey;
+		if (!apiKey || !apiKey.trim()) {
+			this.chatError =
+				"채팅에는 OpenAI API 키가 필요합니다. 설정 탭에서 키를 입력해주세요.";
+			this.renderChat();
+			return;
+		}
+
+		this.chatMessages.push({ role: "user", content: text });
+		this.chatLoading = true;
+		this.chatLoadingText = "관련 노트 검색 중";
+		this.renderChat();
+
+		const abort = new AbortController();
+		this.chatAbort?.abort();
+		this.chatAbort = abort;
+
+		try {
+			const cached = await this.getOrCompute(text, apiKey);
+			if (this.chatAbort !== abort) return;
+			const topK = this.host.settings.chatTopK;
+			const rawHits = hybridSearch(db, cached.tokens, cached.embedding, {
+				topN: topK * 3,
+			});
+			const hits = capPerNote(rawHits, MAX_CHUNKS_PER_NOTE).slice(
+				0,
+				topK,
+			);
+			// 총량 캡이 사용자가 고른 개수를 깎지 않도록 개수에 비례해 전달.
+			const ctx = buildContext(hits, maxContextCharsFor(topK));
+			this.chatLoadingText =
+				ctx.used.length > 0
+					? `노트 ${ctx.used.length}개를 참고해 답변 생성 중`
+					: "답변 생성 중";
+			this.renderChat();
+			// 히스토리에는 최신 질문을 제외한 이전 턴만 넣는다.
+			const history = this.chatMessages.slice(0, -1);
+			const messages = buildChatMessages(history, text, ctx.block);
+			const answer = await chatComplete(
+				messages,
+				this.host.settings.chatModel,
+				apiKey,
+				abort.signal,
+			);
+			if (this.chatAbort !== abort) return;
+			this.chatMessages.push({
+				role: "assistant",
+				content: answer,
+				sources: ctx.used,
+			});
+		} catch (e) {
+			if (this.chatAbort !== abort) return;
+			if (e instanceof MissingApiKeyError) {
+				this.chatError =
+					"채팅에는 OpenAI API 키가 필요합니다. 설정 탭에서 키를 입력해주세요.";
+			} else {
+				console.error("[a4p-sermon-desk][chat] failed", e);
+				this.chatError = (e as Error).message;
+			}
+		} finally {
+			if (this.chatAbort === abort) {
+				this.chatLoading = false;
+				this.chatLoadingText = null;
+				this.chatAbort = null;
+				this.renderChat();
+			}
+		}
 	}
 
 	private async openHit(
