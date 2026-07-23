@@ -1,5 +1,5 @@
 import { render } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { App, Component, MarkdownRenderer, Notice } from "obsidian";
 import type { HybridHit } from "../search/hybrid";
 import { parseCiteNumbers, type ChatMessage } from "../chat/rag";
@@ -26,7 +26,19 @@ const EXAMPLE_QUESTIONS = [
 	"'은혜'를 내 설교에서 어떻게 정의했었지?",
 	"시편 23편 관련 내 묵상을 요약해줘",
 	"청소년 설교에 쓸 만한 십자가 예화가 있을까?",
+	"'회개'를 다룬 설교 예화 모아줘",
+	"요한복음 3장 본문으로 설교한 적 있나?",
+	"어린이 설교에 쓸 만한 감사 이야기 찾아줘",
+	"최근 묵상에서 반복된 주제가 뭐야?",
+	"'믿음과 행함'에 대해 내가 정리한 내용 알려줘",
+	"성탄절 설교에서 내가 강조했던 포인트는?",
+	"'기도'에 관한 내 노트들을 요약해줘",
 ];
+
+/** 열 때마다 다른 예시를 보여주기 위해 마운트당 1회 무작위 3개 추출. */
+function pickExamples(): string[] {
+	return [...EXAMPLE_QUESTIONS].sort(() => Math.random() - 0.5).slice(0, 3);
+}
 
 export function renderChatPanel(
 	mountEl: HTMLElement,
@@ -83,6 +95,7 @@ function ChatPanel(props: ChatPanelProps) {
 
 	const turns = buildTurns(props.messages);
 	const empty = turns.length === 0 && !props.loading && !props.error;
+	const examples = useMemo(pickExamples, []);
 
 	return (
 		<div class="wr-chat">
@@ -108,8 +121,11 @@ function ChatPanel(props: ChatPanelProps) {
 							답변의 <span class="wr-chat-cite-demo">1</span> 번호를
 							누르면 근거 노트를 바로 볼 수 있습니다.
 						</div>
+						<div class="wr-chat-examples-label">
+							💡 이런 질문을 해보세요 (예시)
+						</div>
 						<div class="wr-chat-examples">
-							{EXAMPLE_QUESTIONS.map((q) => (
+							{examples.map((q) => (
 								<button
 									key={q}
 									class="wr-chat-example-btn"

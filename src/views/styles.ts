@@ -877,11 +877,16 @@ export const WR_STYLES = `
 	border-color: var(--interactive-accent);
 	color: var(--text-on-accent);
 }
+.wr-chat-examples-label {
+	margin-top: 14px;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
 .wr-chat-examples {
 	display: flex;
 	flex-direction: column;
 	gap: 6px;
-	margin-top: 10px;
+	margin-top: 8px;
 	width: 100%;
 	max-width: 260px;
 }
