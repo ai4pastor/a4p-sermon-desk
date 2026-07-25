@@ -43,6 +43,8 @@ export default class WeightedRecallPlugin extends Plugin {
 	private styleEl: HTMLStyleElement | null = null;
 	private busy = false;
 	private migratedThisLoad = false;
+	/** 마지막 저장 이후 DB 변경 여부 — unload 시 불필요한 재저장을 막는다 */
+	private dbDirty = false;
 
 	async onload() {
 		await this.loadSettings();
@@ -103,6 +105,7 @@ export default class WeightedRecallPlugin extends Plugin {
 		// 설정 마이그레이션이 일어났다면, 기존 인덱스의 그룹/가중치를 비파괴적으로 재적용
 		if (this.migratedThisLoad) {
 			try {
+				this.dbDirty = true;
 				const r = reapplyFolderSettings(this.db, this.settings);
 				await this.persistDb();
 				if (__DEV__) {
@@ -421,6 +424,7 @@ export default class WeightedRecallPlugin extends Plugin {
 		}
 		const progress = new Notice("A4P Sermon Desk: 임베딩 중…", 0);
 		try {
+			this.dbDirty = true;
 			const r = await embedMissingChunks(
 				this.db,
 				apiKey,
@@ -429,7 +433,7 @@ export default class WeightedRecallPlugin extends Plugin {
 						`A4P Sermon Desk: 임베딩 ${p.done}/${p.total}`,
 					),
 			);
-			await saveDb(this, this.db);
+			await this.persistDb();
 			progress.hide();
 			if (r.embedded === 0) {
 				new Notice("A4P Sermon Desk: 임베딩할 청크가 없습니다");
@@ -454,10 +458,17 @@ export default class WeightedRecallPlugin extends Plugin {
 
 	async onunload() {
 		if (this.db) {
-			try {
-				await saveDb(this, this.db);
-			} catch (e) {
-				console.error("[a4p-sermon-desk] save on unload failed", e);
+			// 변경분이 없으면 저장 생략 — 리로드 시 새 인스턴스의 onload와
+			// 경합해 index.db가 유실되는 것을 막고, 불필요한 대용량 쓰기도 줄인다
+			if (this.dbDirty) {
+				try {
+					await saveDb(this, this.db);
+				} catch (e) {
+					console.error(
+						"[a4p-sermon-desk] save on unload failed",
+						e,
+					);
+				}
 			}
 			this.db.close();
 			this.db = null;
@@ -534,6 +545,7 @@ export default class WeightedRecallPlugin extends Plugin {
 			try {
 				await preloadMorpheme();
 				progress.setMessage("A4P Sermon Desk: 인덱싱 0/?");
+				this.dbDirty = true;
 				const result = await runIndex(
 					this.app,
 					this.db,
@@ -546,7 +558,7 @@ export default class WeightedRecallPlugin extends Plugin {
 							),
 					},
 				);
-				await saveDb(this, this.db);
+				await this.persistDb();
 				progress.hide();
 				if (result.mode === "full") {
 					new Notice(
@@ -584,6 +596,7 @@ export default class WeightedRecallPlugin extends Plugin {
 				return;
 			}
 			try {
+				this.dbDirty = true;
 				const r = reapplyFolderSettings(this.db, this.settings);
 				await this.persistDb();
 				new Notice(
@@ -598,7 +611,14 @@ export default class WeightedRecallPlugin extends Plugin {
 		});
 	}
 
+	/** DB가 변경되었음을 표시 — 다음 persistDb/unload에서 저장 대상이 된다 */
+	markDbDirty(): void {
+		this.dbDirty = true;
+	}
+
 	async persistDb() {
-		if (this.db) await saveDb(this, this.db);
+		if (!this.db) return;
+		await saveDb(this, this.db);
+		this.dbDirty = false;
 	}
 }

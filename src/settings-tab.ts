@@ -373,6 +373,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 				const apiKey = this.plugin.settings.openaiApiKey;
 				btn.setDisabled(true);
 				try {
+					this.plugin.markDbDirty();
 					const res = await embedDoctrineKeys(
 						db,
 						this.plugin.settings.doctrineKeywords,
@@ -577,6 +578,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 				const startEmbedded = computeCounts().embedded;
 				btn.setDisabled(true);
 				try {
+					this.plugin.markDbDirty();
 					const res = await embedTagKeys(
 						db,
 						apiKey,
