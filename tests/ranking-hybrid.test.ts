@@ -121,6 +121,44 @@ describe("hybridSearch — 가중치", () => {
 	});
 });
 
+describe("hybridSearch — resolveWeight 주입 (테마 프로파일)", () => {
+	it("주입된 해석기가 DB weight를 대체한다 (배지 noteWeight 포함)", async () => {
+		const m = await makeMiniDb();
+		try {
+			m.addNote("n.md", { weight: 1.5 }); // DB(scope)는 10점
+			m.addChunk("n.md", { text: "알파 베타", terms: ["알파", "베타"] });
+			const dbView = hybridSearch(m.db, ["알파", "베타"], null);
+			const profView = hybridSearch(m.db, ["알파", "베타"], null, {
+				resolveWeight: () => 0.15, // 활성 프로파일은 1점
+			});
+			expect(relClose(dbView[0].noteWeight, 1.5)).toBe(true);
+			expect(relClose(profView[0].noteWeight, 0.15)).toBe(true);
+			expect(
+				relClose(dbView[0].finalScore / profView[0].finalScore, 10),
+			).toBe(true);
+		} finally {
+			m.close();
+		}
+	});
+
+	it("해석기가 0을 반환한 노트는 결과에서 제외된다 (DB weight가 커도)", async () => {
+		const m = await makeMiniDb();
+		try {
+			m.addNote("on.md", { weight: 1.5 });
+			m.addNote("off.md", { weight: 1.5 });
+			for (const p of ["on.md", "off.md"]) {
+				m.addChunk(p, { text: "알파 베타", terms: ["알파", "베타"] });
+			}
+			const hits = hybridSearch(m.db, ["알파", "베타"], null, {
+				resolveWeight: (p) => (p === "off.md" ? 0 : 1),
+			});
+			expect(hits.map((h) => h.notePath)).toEqual(["on.md"]);
+		} finally {
+			m.close();
+		}
+	});
+});
+
 describe("hybridSearch — 부스트", () => {
 	it("헤딩에 쿼리 토큰(2글자+) 포함 시 1.2배, 끄면 원복", async () => {
 		const m = await makeMiniDb();

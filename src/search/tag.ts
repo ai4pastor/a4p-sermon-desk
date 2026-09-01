@@ -259,6 +259,11 @@ export function extractTags(app: App, path: string): Set<string> {
 export interface TagSearchOpts {
 	topN?: number;
 	excludePath?: string;
+	/**
+	 * 활성 테마 프로파일의 가중치 해석기(내부 배율 0~1.5). 0 = 제외.
+	 * 미지정 시 DB notes.weight(scope 값) 사용 — 디버그·폴백 전용.
+	 */
+	resolveWeight?: (notePath: string) => number;
 }
 
 export function tagSearch(
@@ -343,9 +348,11 @@ export function tagSearch(
 		if (excludeNorm && normalizePath(path) === excludeNorm) continue;
 		const rawScore = scores.get(path) ?? 0;
 		if (rawScore === 0) continue;
-		const weight = Number(row[2]);
-		// weight 0 = 검색 제외 의도 — 경량 재적용(reapply) 직후에도 결과에 노출되지 않게.
-		if (weight === 0) continue;
+		const weight = opts.resolveWeight
+			? opts.resolveWeight(path)
+			: Number(row[2]);
+		// weight 0 = 검색 제외 의도(활성 프로파일 0점 포함) — reapply 직후에도 노출 방지.
+		if (weight <= 0) continue;
 		candidates.push({
 			path,
 			categoryId: String(row[1]),

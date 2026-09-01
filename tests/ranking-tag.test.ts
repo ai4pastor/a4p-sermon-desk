@@ -143,6 +143,29 @@ describe("tagSearch — 가중치·제외", () => {
 		}
 	});
 
+	it("resolveWeight 주입 시 DB weight 대신 프로파일 가중치가 곱해지고 0은 제외", async () => {
+		const m = await makeMiniDb();
+		try {
+			m.addNote("on.md", { weight: 1.5 });
+			m.addNote("off.md", { weight: 1.5 });
+			for (const p of ["on.md", "off.md"]) {
+				m.addChunk(p, { text: "본문" });
+				m.addDoctrine(p, "칭의");
+			}
+			const hits = tagSearch(
+				m.db,
+				keysOf({ dExact: new Set(["칭의"]) }),
+				appStub,
+				{ resolveWeight: (p) => (p === "off.md" ? 0 : 0.3) },
+			);
+			expect(hits.map((h) => h.notePath)).toEqual(["on.md"]);
+			expect(hits[0].finalScore).toBeCloseTo(3 * 0.3, 9);
+			expect(hits[0].noteWeight).toBeCloseTo(0.3, 9);
+		} finally {
+			m.close();
+		}
+	});
+
 	it("excludePath로 현재 노트를 제외한다", async () => {
 		const m = await makeMiniDb();
 		try {

@@ -29,6 +29,12 @@ export interface HybridOptions {
 	applyWeight?: boolean;
 	applyHeadingBoost?: boolean;
 	applyOverlapBoost?: boolean;
+	/**
+	 * 활성 테마 프로파일의 가중치 해석기(내부 배율 0~1.5). 0을 반환한 노트는
+	 * 결과에서 제외된다. 미지정 시 DB notes.weight(= 전 프로파일 최대 scope 값)를
+	 * 사용 — 디버그·폴백 전용이며, 프로덕션 호출부는 항상 주입한다.
+	 */
+	resolveWeight?: (notePath: string) => number;
 }
 
 const RRF_K = 60;
@@ -156,7 +162,11 @@ export function hybridSearch(
 			const preview = String(r[3] ?? "");
 			const fullText = String(r[4] ?? "");
 			const categoryId = String(r[5]);
-			const noteWeight = Number(r[6]);
+			const noteWeight = opts.resolveWeight
+				? opts.resolveWeight(notePath)
+				: Number(r[6]);
+			// 활성 프로파일에서 0점(또는 미매칭/제외)인 노트는 제외.
+			if (noteWeight <= 0) continue;
 			const entry = rrfMap.get(chunkId);
 			if (!entry) continue;
 
