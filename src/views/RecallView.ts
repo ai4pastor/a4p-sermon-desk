@@ -13,6 +13,7 @@ import type { Database } from "sql.js";
 import type { GroupId, WeightedRecallSettings } from "../settings";
 import { preloadMorpheme, tokenize } from "../morpheme";
 import { hybridSearch, HybridHit } from "../search/hybrid";
+import { dedupeHits } from "../search/dedupe";
 import {
 	extractQueryKeysWithSynonyms,
 	buildSynonymTokenIndex,
@@ -612,7 +613,7 @@ export class RecallView extends ItemView {
 		});
 		const ms = performance.now() - t0;
 		const filtered = rawHits.filter((h) => h.notePath !== file.path);
-		const deduped = this.dedupeHits(filtered).slice(0, TOP_N);
+		const deduped = dedupeHits(filtered).slice(0, TOP_N);
 		if (gen !== this.refreshGen) return;
 		if (__DEV__) {
 			console.log(
@@ -702,7 +703,7 @@ export class RecallView extends ItemView {
 			topN: TOP_N * 3,
 			excludePath: file.path,
 		});
-		const hits = this.dedupeHits(rawHits).slice(0, TOP_N);
+		const hits = dedupeHits(rawHits).slice(0, TOP_N);
 		const ms = performance.now() - t0;
 		if (gen !== this.refreshGen) return;
 		if (__DEV__) {
@@ -889,34 +890,6 @@ export class RecallView extends ItemView {
 			if (oldest !== undefined) this.queryCache.delete(oldest);
 		}
 		return entry;
-	}
-
-	private canonicalTitle(t: string): string {
-		// 사본 접미어만 접는다. 단순 "공백+숫자"를 접으면
-		// "시편 23"/"시편 100" 같은 정당한 시리즈 노트가 하나로 합쳐진다.
-		return t
-			.replace(/\s+복사본(\s+\d+)?$/, "")
-			.replace(/\s+copy(\s+\d+)?$/i, "")
-			.trim();
-	}
-
-	private dedupeHits(hits: HybridHit[]): HybridHit[] {
-		const byPath = new Map<string, HybridHit>();
-		for (const h of hits) {
-			const cur = byPath.get(h.notePath);
-			if (!cur || h.finalScore > cur.finalScore) byPath.set(h.notePath, h);
-		}
-		const byTitle = new Map<string, HybridHit>();
-		for (const h of byPath.values()) {
-			const titleKey = this.canonicalTitle(h.noteTitle);
-			const cur = byTitle.get(titleKey);
-			const better =
-				!cur ||
-				h.noteWeight > cur.noteWeight ||
-				(h.noteWeight === cur.noteWeight && h.finalScore > cur.finalScore);
-			if (better) byTitle.set(titleKey, h);
-		}
-		return [...byTitle.values()].sort((a, b) => b.finalScore - a.finalScore);
 	}
 
 	// ── 채팅 (노트 기반 RAG) ──
