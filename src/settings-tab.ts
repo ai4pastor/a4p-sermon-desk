@@ -22,6 +22,9 @@ import {
 	FolderEntry,
 	parseDoctrineRaw,
 	foldersFingerprint,
+	getActiveProfile,
+	makeProfileId,
+	normalizeSettings,
 } from "./settings";
 import { FolderSuggest } from "./folder-suggest";
 import {
@@ -84,6 +87,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 		});
 
 		this.renderSyncBanner(containerEl);
+		this.renderProfiles(containerEl);
 		this.renderGroup(containerEl, "internal");
 		this.renderGroup(containerEl, "external");
 		this.renderExcludedFolders(containerEl);
@@ -697,8 +701,8 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 		const banner = containerEl.createDiv({ cls: "wr-sync-banner" });
 		banner.createEl("p", {
 			text: inSync
-				? "✅ 폴더·가중치 설정이 검색 인덱스와 일치합니다."
-				: "⚠️ 폴더·가중치를 바꿨습니다. 아래 ‘변경사항 적용’을 눌러야 검색에 반영됩니다.",
+				? "✅ 폴더 설정이 검색 인덱스와 일치합니다. 테마 전환·점수 조정은 버튼 없이 즉시 반영됩니다."
+				: "⚠️ 인덱스 반영이 필요한 변경입니다(폴더 추가/제거·그룹 이동·0점↔사용 전환·제외 폴더). 아래 ‘변경사항 적용’을 누르세요. 0점이던 폴더를 새로 살렸거나 폴더를 추가했다면 [재색인 (변경분만)]까지 눌러야 그 폴더 내용이 검색됩니다.",
 			cls: "setting-item-description",
 		});
 		new Setting(banner)
@@ -731,6 +735,114 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 						await this.plugin.runReindex(true);
 						this.display();
 					});
+			});
+	}
+
+	/** 테마 프로파일 관리 — 전환·추가(복제)·이름 변경·삭제. */
+	private renderProfiles(containerEl: HTMLElement): void {
+		const s = this.plugin.settings;
+		const active = getActiveProfile(s);
+		const groupEl = containerEl.createDiv({
+			cls: "wr-group wr-group-profiles",
+		});
+		const header = groupEl.createDiv({ cls: "wr-group-header" });
+		header.createSpan({ text: "🎨", cls: "wr-group-icon" });
+		header.createSpan({ text: "테마 프로파일" });
+		groupEl.createEl("p", {
+			text: "상황(테마)마다 폴더 점수를 다르게 저장해 두고 전환할 수 있습니다. 예: ‘설교’는 설교·묵상 폴더를 높게, ‘연구’는 스크랩·논문 폴더를 높게. 전환과 점수 조정은 재색인 없이 즉시 검색에 반영되며, 패널의 ‘테마’ 칩으로도 전환됩니다.",
+			cls: "wr-group-desc",
+		});
+
+		const refreshAfterChange = async () => {
+			await this.plugin.saveSettings();
+			this.plugin.refreshRecallViewsUI();
+			this.display();
+		};
+
+		new Setting(groupEl)
+			.setName("사용할 테마")
+			.setDesc(`아래 폴더 점수는 ‘${active.name}’ 테마의 값입니다.`)
+			.addDropdown((dd) => {
+				for (const p of s.profiles) dd.addOption(p.id, p.name);
+				dd.setValue(active.id).onChange(async (v) => {
+					s.activeProfileId = v;
+					await refreshAfterChange();
+				});
+			})
+			.addExtraButton((btn) => {
+				btn.setIcon("trash-2")
+					.setTooltip("현재 테마 삭제")
+					.onClick(async () => {
+						if (s.profiles.length <= 1) {
+							new Notice("마지막 테마는 삭제할 수 없습니다.");
+							return;
+						}
+						const removed = getActiveProfile(s);
+						s.profiles = s.profiles.filter(
+							(p) => p.id !== removed.id,
+						);
+						s.activeProfileId = s.profiles[0].id;
+						new Notice(`‘${removed.name}’ 테마를 삭제했습니다.`);
+						await refreshAfterChange();
+					});
+			});
+
+		let nameComp: TextComponent;
+		new Setting(groupEl)
+			.setName("＋ 새 테마 / 이름 변경")
+			.setDesc(
+				"이름을 입력하고 [복제해 추가]를 누르면 현재 테마의 점수를 복사한 새 테마가 생기고, [이름 변경]은 현재 테마의 이름을 바꿉니다.",
+			)
+			.addText((text) => {
+				nameComp = text;
+				text.setPlaceholder("예: 연구, 청소년부…");
+			})
+			.addButton((btn) => {
+				btn.setButtonText("복제해 추가").onClick(async () => {
+					const name = nameComp.getValue().trim();
+					if (!name) {
+						new Notice("테마 이름을 입력해주세요.");
+						return;
+					}
+					if (s.profiles.some((p) => p.name === name)) {
+						new Notice("같은 이름의 테마가 이미 있습니다.");
+						return;
+					}
+					const src = getActiveProfile(s);
+					const id = makeProfileId();
+					s.profiles.push({
+						id,
+						name,
+						weights: { ...src.weights },
+					});
+					s.activeProfileId = id; // 만든 테마를 바로 편집하도록 전환
+					nameComp.setValue("");
+					new Notice(
+						`‘${name}’ 테마를 만들었습니다 (‘${src.name}’ 점수 복사). 아래에서 점수를 조정하세요.`,
+					);
+					await refreshAfterChange();
+				});
+			})
+			.addButton((btn) => {
+				btn.setButtonText("이름 변경").onClick(async () => {
+					const name = nameComp.getValue().trim();
+					if (!name) {
+						new Notice("바꿀 이름을 입력해주세요.");
+						return;
+					}
+					const cur = getActiveProfile(s);
+					if (
+						s.profiles.some(
+							(p) => p.name === name && p.id !== cur.id,
+						)
+					) {
+						new Notice("같은 이름의 테마가 이미 있습니다.");
+						return;
+					}
+					cur.name = name;
+					nameComp.setValue("");
+					await refreshAfterChange();
+				});
 			});
 	}
 
@@ -768,6 +880,10 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 		folder: FolderEntry,
 	): void {
 		const fmt = (w: number) => (w === 0 ? "0 · 제외" : `${w}`);
+		// 슬라이더는 활성 테마 프로파일의 값을 편집한다.
+		// (folder.weight 미러 동기화는 saveSettings의 mirrorActiveWeights가 담당)
+		const active = getActiveProfile(this.plugin.settings);
+		const current = active.weights[folder.path] ?? folder.weight;
 		const setting = new Setting(containerEl).setName(folder.path);
 		const valueLabel = setting.controlEl.createSpan({
 			cls: "weighted-recall-value",
@@ -775,15 +891,15 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 		setting.addSlider((slider) => {
 			slider
 				.setLimits(WEIGHT_MIN, WEIGHT_MAX, WEIGHT_STEP)
-				.setValue(folder.weight)
+				.setValue(current)
 				.setDynamicTooltip()
 				.onChange(async (value) => {
-					folder.weight = value;
+					active.weights[folder.path] = value;
 					valueLabel.setText(fmt(value));
 					await this.plugin.saveSettings();
 				});
 		});
-		valueLabel.setText(fmt(folder.weight));
+		valueLabel.setText(fmt(current));
 		valueLabel.style.minWidth = "3.5em";
 		valueLabel.style.textAlign = "right";
 		valueLabel.style.marginLeft = "0.5em";
@@ -808,6 +924,10 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 						this.plugin.settings.folders.filter(
 							(f) => f.path !== folder.path,
 						);
+					// 폴더 목록은 전 테마 공유 — 모든 프로파일에서 점수도 제거.
+					for (const p of this.plugin.settings.profiles) {
+						delete p.weights[folder.path];
+					}
 					await this.plugin.saveSettings();
 					this.display();
 				});
@@ -850,6 +970,10 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 							groupId,
 							weight: DEFAULT_WEIGHT,
 						});
+						// 모든 테마에 기본 점수로 추가 (폴더 목록은 전 테마 공유).
+						for (const p of this.plugin.settings.profiles) {
+							p.weights[path] = DEFAULT_WEIGHT;
+						}
 						textComp.setValue("");
 						await this.plugin.saveSettings();
 						this.display();
@@ -930,10 +1054,12 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 				btn.setButtonText("초기화")
 					.setWarning()
 					.onClick(async () => {
-						this.plugin.settings = JSON.parse(
-							JSON.stringify(DEFAULT_SETTINGS),
+						// normalize가 기본 테마(설교·연구) 백필까지 보장.
+						this.plugin.settings = normalizeSettings(
+							JSON.parse(JSON.stringify(DEFAULT_SETTINGS)),
 						);
 						await this.plugin.saveSettings();
+						this.plugin.refreshRecallViewsUI();
 						this.display();
 					});
 			});
