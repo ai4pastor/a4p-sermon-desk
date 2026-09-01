@@ -2,8 +2,8 @@ import { App } from "obsidian";
 import type { Database } from "sql.js";
 import {
 	WeightedRecallSettings,
-	isPathExcluded,
 	longestPrefixFolder,
+	scopeWeight10,
 	weightToInternal,
 	foldersFingerprint,
 } from "../settings";
@@ -22,10 +22,14 @@ export function categorizeFile(
 	path: string,
 	settings: WeightedRecallSettings,
 ): { groupId: string; weight: number } | null {
-	if (isPathExcluded(settings, path)) return null;
+	// notes.weight에는 "전 프로파일 최대(scope)" 배율을 저장한다 — 어떤 프로파일이라도
+	// 쓰는 노트는 인덱스에 있어야 하고, SQL의 weight > 0은 scope 게이트가 된다.
+	// 활성 프로파일의 실제 가중치는 검색 시점의 resolveWeight가 곱한다.
+	const w10 = scopeWeight10(settings, path);
+	if (w10 === 0) return null;
 	const entry = longestPrefixFolder(settings, path);
-	if (!entry || entry.weight === 0) return null;
-	return { groupId: entry.groupId, weight: weightToInternal(entry.weight) };
+	if (!entry) return null;
+	return { groupId: entry.groupId, weight: weightToInternal(w10) };
 }
 
 export function scanVault(

@@ -6,6 +6,7 @@ import {
 	isValidSettings,
 	migrateLegacySettings,
 	migrateToFlat,
+	mirrorActiveWeights,
 	normalizeSettings,
 } from "./settings";
 import { WeightedRecallSettingTab } from "./settings-tab";
@@ -504,6 +505,19 @@ export default class WeightedRecallPlugin extends Plugin {
 				data,
 			) as WeightedRecallSettings;
 			this.settings = normalizeSettings(merged);
+			// v2 → v3: raw 데이터에 profiles가 없었으면 normalize가 방금 백필한 것 —
+			// 저장하고, 지문 형식(v3) 변경에 맞춰 post-migration reapply를 태운다.
+			// isValidSettings 가드로 타입은 v3처럼 보이지만 v2 데이터엔 profiles가 없다.
+			const rawProfiles: unknown = data.profiles;
+			if (!Array.isArray(rawProfiles) || rawProfiles.length === 0) {
+				this.migratedThisLoad = true;
+				await this.saveSettings();
+				if (__DEV__) {
+					console.log(
+						"[a4p-sermon-desk] v3 마이그레이션: 테마 프로파일(설교·연구) 백필됨",
+					);
+				}
+			}
 			return;
 		}
 		const legacy = migrateLegacySettings(data);
@@ -528,6 +542,8 @@ export default class WeightedRecallPlugin extends Plugin {
 	}
 
 	async saveSettings() {
+		// folders[].weight(구버전 호환 미러)를 활성 프로파일 값으로 동기화하는 단일 관문.
+		mirrorActiveWeights(this.settings);
 		await this.saveData(this.settings);
 	}
 
