@@ -15,6 +15,12 @@ import {
 	isPathExcluded,
 	longestPrefixFolder,
 	getFolderWeight,
+	getActiveProfile,
+	scopeWeight10,
+	resolveWeight10,
+	makeWeightResolver,
+	mirrorActiveWeights,
+	foldersFingerprint,
 	type WeightedRecallSettings,
 } from "../src/settings";
 
@@ -196,5 +202,240 @@ describe("normalizeSettings", () => {
 		expect(out.chatModel).toBe(DEFAULT_CHAT_MODEL);
 		const ok = normalizeSettings(settingsWith({ chatModel: "gpt-4o-mini" }));
 		expect(ok.chatModel).toBe("gpt-4o-mini");
+	});
+});
+
+describe("테마 프로파일 — v2→v3 백필", () => {
+	const V2_FOLDERS = [
+		{ path: "Sermons/", groupId: "internal" as const, weight: 8 },
+		{ path: "Papers/", groupId: "external" as const, weight: 3 },
+	];
+
+	it("profiles가 없으면 미러 weight로 '설교'+'연구'를 생성한다", () => {
+		const out = normalizeSettings(
+			settingsWith({ folders: [...V2_FOLDERS] }),
+		);
+		expect(out.profiles.map((p) => p.name)).toEqual(["설교", "연구"]);
+		expect(out.profiles[0].id).toBe("default");
+		expect(out.profiles[1].id).toBe("research");
+		for (const p of out.profiles) {
+			expect(p.weights).toEqual({ "Sermons/": 8, "Papers/": 3 });
+		}
+		expect(out.activeProfileId).toBe("default");
+	});
+
+	it("profiles가 이미 있으면 백필하지 않는다 (재생성 없음)", () => {
+		const out = normalizeSettings(
+			settingsWith({
+				folders: [...V2_FOLDERS],
+				profiles: [
+					{ id: "only", name: "설교", weights: { "Sermons/": 8, "Papers/": 3 } },
+				],
+				activeProfileId: "only",
+			}),
+		);
+		expect(out.profiles).toHaveLength(1);
+	});
+
+	it("weights의 잉여 키는 버리고 누락 키는 미러로 백필하며 범위를 클램프한다", () => {
+		const out = normalizeSettings(
+			settingsWith({
+				folders: [...V2_FOLDERS],
+				profiles: [
+					{
+						id: "a",
+						name: "설교",
+						weights: { "Sermons/": 22, "삭제된폴더/": 5 },
+					},
+				],
+				activeProfileId: "a",
+			}),
+		);
+		expect(out.profiles[0].weights).toEqual({
+			"Sermons/": 10, // 22 → clamp
+			"Papers/": 3, // 누락 → 미러 백필
+		});
+	});
+
+	it("무효한 activeProfileId는 첫 프로파일로 복구하고, 중복 id·빈 이름을 보정한다", () => {
+		const out = normalizeSettings(
+			settingsWith({
+				folders: [...V2_FOLDERS],
+				profiles: [
+					{ id: "a", name: "설교", weights: {} },
+					{ id: "a", name: "중복", weights: {} },
+					{ id: "b", name: "  ", weights: {} },
+				],
+				activeProfileId: "없는id",
+			}),
+		);
+		expect(out.profiles.map((p) => p.id)).toEqual(["a", "b"]);
+		expect(out.profiles[1].name).toBe("프로파일 2");
+		expect(out.activeProfileId).toBe("a");
+	});
+
+	it("normalize 후 미러 weight = 활성 프로파일 값", () => {
+		const out = normalizeSettings(
+			settingsWith({
+				folders: [...V2_FOLDERS],
+				profiles: [
+					{ id: "a", name: "설교", weights: { "Sermons/": 8, "Papers/": 3 } },
+					{ id: "b", name: "연구", weights: { "Sermons/": 1, "Papers/": 9 } },
+				],
+				activeProfileId: "b",
+			}),
+		);
+		expect(out.folders.find((f) => f.path === "Sermons/")?.weight).toBe(1);
+		expect(out.folders.find((f) => f.path === "Papers/")?.weight).toBe(9);
+	});
+});
+
+describe("테마 프로파일 — 해석기", () => {
+	const s = normalizeSettings(
+		settingsWith({
+			excludedFolders: ["Private/"],
+			folders: [
+				{ path: "Notes/", groupId: "internal", weight: 5 },
+				{ path: "Notes/Sermons/", groupId: "internal", weight: 10 },
+			],
+			profiles: [
+				{
+					id: "sermon",
+					name: "설교",
+					weights: { "Notes/": 5, "Notes/Sermons/": 10 },
+				},
+				{
+					id: "research",
+					name: "연구",
+					weights: { "Notes/": 7, "Notes/Sermons/": 0 },
+				},
+			],
+			activeProfileId: "research",
+		}),
+	);
+
+	it("resolveWeight10 — 활성 프로파일 값 + 최장 접두어 + 제외/미매칭 0", () => {
+		expect(resolveWeight10(s, "Notes/a.md")).toBe(7);
+		expect(resolveWeight10(s, "Notes/Sermons/a.md")).toBe(0); // 연구에서 0
+		expect(resolveWeight10(s, "Private/a.md")).toBe(0);
+		expect(resolveWeight10(s, "Elsewhere/a.md")).toBe(0);
+	});
+
+	it("makeWeightResolver — 내부 배율(×0.15)로 변환하고 메모이즈된다", () => {
+		const resolve = makeWeightResolver(s);
+		expect(resolve("Notes/a.md")).toBeCloseTo(7 * 0.15, 9);
+		expect(resolve("Notes/a.md")).toBeCloseTo(7 * 0.15, 9);
+		expect(resolve("Notes/Sermons/a.md")).toBe(0);
+	});
+
+	it("scopeWeight10 — 전 프로파일 최대값 (한쪽이 0이어도 다른 쪽이 살리면 >0)", () => {
+		expect(scopeWeight10(s, "Notes/Sermons/a.md")).toBe(10); // 설교 10, 연구 0 → 10
+		expect(scopeWeight10(s, "Notes/a.md")).toBe(7);
+		expect(scopeWeight10(s, "Private/a.md")).toBe(0);
+	});
+
+	it("getActiveProfile — 미스매치·빈 목록에도 안전", () => {
+		expect(getActiveProfile(s).id).toBe("research");
+		const empty = { ...s, profiles: [], activeProfileId: "x" };
+		expect(getActiveProfile(empty).weights).toEqual({});
+	});
+
+	it("mirrorActiveWeights — 같은 folders 배열을 in-place 갱신한다", () => {
+		const copy = normalizeSettings(
+			settingsWith({
+				folders: [{ path: "A/", groupId: "internal", weight: 5 }],
+				profiles: [
+					{ id: "p1", name: "설교", weights: { "A/": 5 } },
+					{ id: "p2", name: "연구", weights: { "A/": 9 } },
+				],
+				activeProfileId: "p1",
+			}),
+		);
+		const foldersRef = copy.folders;
+		copy.activeProfileId = "p2";
+		mirrorActiveWeights(copy);
+		expect(copy.folders).toBe(foldersRef);
+		expect(copy.folders[0].weight).toBe(9);
+	});
+});
+
+describe("테마 프로파일 — scope 지문", () => {
+	const base = normalizeSettings(
+		settingsWith({
+			folders: [
+				{ path: "A/", groupId: "internal", weight: 5 },
+				{ path: "B/", groupId: "external", weight: 3 },
+			],
+		}),
+	);
+
+	it("scope가 유지되는 가중치 조정·프로파일 전환은 지문을 바꾸지 않는다", () => {
+		const fp = foldersFingerprint(base);
+		expect(fp.startsWith("v3|")).toBe(true);
+		const tweaked = normalizeSettings(
+			settingsWith({
+				folders: [
+					{ path: "A/", groupId: "internal", weight: 9 },
+					{ path: "B/", groupId: "external", weight: 1 },
+				],
+			}),
+		);
+		expect(foldersFingerprint(tweaked)).toBe(fp);
+		const switched = { ...base, activeProfileId: "research" };
+		expect(foldersFingerprint(switched)).toBe(fp);
+	});
+
+	it("0↔N 전환·폴더 추가·그룹 이동·제외 변경은 지문을 바꾼다", () => {
+		const fp = foldersFingerprint(base);
+		const zeroed = normalizeSettings(
+			settingsWith({
+				folders: [
+					{ path: "A/", groupId: "internal", weight: 0 },
+					{ path: "B/", groupId: "external", weight: 3 },
+				],
+			}),
+		);
+		expect(foldersFingerprint(zeroed)).not.toBe(fp);
+		const added = normalizeSettings(
+			settingsWith({
+				folders: [...base.folders, { path: "C/", groupId: "internal", weight: 5 }],
+			}),
+		);
+		expect(foldersFingerprint(added)).not.toBe(fp);
+		const regrouped = normalizeSettings(
+			settingsWith({
+				folders: [
+					{ path: "A/", groupId: "external", weight: 5 },
+					{ path: "B/", groupId: "external", weight: 3 },
+				],
+			}),
+		);
+		expect(foldersFingerprint(regrouped)).not.toBe(fp);
+		const excluded = normalizeSettings(
+			settingsWith({
+				folders: [...base.folders],
+				excludedFolders: [".trash/", "X/"],
+			}),
+		);
+		expect(foldersFingerprint(excluded)).not.toBe(fp);
+	});
+
+	it("한 프로파일에서만 0이어도 다른 프로파일이 살리면 scope는 유지된다", () => {
+		const s = normalizeSettings(
+			settingsWith({
+				folders: [{ path: "A/", groupId: "internal", weight: 5 }],
+				profiles: [
+					{ id: "p1", name: "설교", weights: { "A/": 5 } },
+					{ id: "p2", name: "연구", weights: { "A/": 0 } },
+				],
+				activeProfileId: "p2",
+			}),
+		);
+		const solo = normalizeSettings(
+			settingsWith({
+				folders: [{ path: "A/", groupId: "internal", weight: 5 }],
+			}),
+		);
+		expect(foldersFingerprint(s)).toBe(foldersFingerprint(solo));
 	});
 });
