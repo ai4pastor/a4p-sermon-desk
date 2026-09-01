@@ -172,12 +172,15 @@ export default class WeightedRecallPlugin extends Plugin {
 						console.log(
 							`[a4p-sermon-desk][hybrid] === query="${q}" terms=[${queryTerms.join(",")}] vector=${queryEmbedding ? "yes" : "no"} ===`,
 						);
+						// ablation 4단 — 각 단계가 정확히 하나씩 더한다.
+						// (applyOverlapBoost 기본값이 true라 명시하지 않으면 베이스라인이 오염됨)
 						const stages = [
 							{
 								label: "RRF only",
 								opts: {
 									applyWeight: false,
 									applyHeadingBoost: false,
+									applyOverlapBoost: false,
 								},
 							},
 							{
@@ -185,6 +188,7 @@ export default class WeightedRecallPlugin extends Plugin {
 								opts: {
 									applyWeight: true,
 									applyHeadingBoost: false,
+									applyOverlapBoost: false,
 								},
 							},
 							{
@@ -192,6 +196,15 @@ export default class WeightedRecallPlugin extends Plugin {
 								opts: {
 									applyWeight: true,
 									applyHeadingBoost: true,
+									applyOverlapBoost: false,
+								},
+							},
+							{
+								label: "+overlap",
+								opts: {
+									applyWeight: true,
+									applyHeadingBoost: true,
+									applyOverlapBoost: true,
 								},
 							},
 						];

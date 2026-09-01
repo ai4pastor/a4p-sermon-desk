@@ -282,6 +282,21 @@ describe("hybridSearch — 기본 동작", () => {
 		}
 	});
 
+	it("초대형 쿼리(토큰 900+)도 바인딩 한도 예외 없이 동작한다", async () => {
+		const m = await makeMiniDb();
+		try {
+			m.addNote("n.md");
+			m.addChunk("n.md", { text: "알파 베타", terms: ["알파", "베타"] });
+			const huge = ["알파", "베타"];
+			for (let i = 0; i < 900; i++) huge.push(`토큰${i}`);
+			const hits = hybridSearch(m.db, huge, null);
+			expect(hits).toHaveLength(1);
+			expect(hits[0].notePath).toBe("n.md");
+		} finally {
+			m.close();
+		}
+	});
+
 	it("topN으로 잘린다", async () => {
 		const m = await makeMiniDb();
 		try {

@@ -114,6 +114,11 @@ describe("tagSearch — 가중합", () => {
 			expect(hits[0].finalScore).toBeCloseTo(4, 9); // 3 + 1
 			expect(hits[0].matchedQueryTerms).toBe(2);
 			expect(hits[0].queryTermsTotal).toBe(2);
+			// 추천 근거 칩 데이터 — 키와 종류가 채워진다
+			const mk = (hits[0].matchedKeys ?? [])
+				.map((k) => `${k.kind}:${k.key}`)
+				.sort();
+			expect(mk).toEqual(["dExact:칭의", "tExact:감사"]);
 		} finally {
 			m.close();
 		}

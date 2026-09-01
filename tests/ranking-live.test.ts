@@ -405,6 +405,7 @@ describe.skipIf(!LIVE_DB)("실측 하니스 (실제 index.db 사본)", () => {
 		if (!db) throw new Error("db 미초기화");
 		let snippetMiss = 0;
 		let snippetTotal = 0;
+		let fullMiss = 0;
 		let tagMiss = 0;
 		let tagTotal = 0;
 		for (const q of QUERIES) {
@@ -425,6 +426,13 @@ describe.skipIf(!LIVE_DB)("실측 하니스 (실제 index.db 사본)", () => {
 					(t) => t.length >= 2 && h.preview.toLowerCase().includes(t),
 				);
 				if (!hit) snippetMiss++;
+				// 개선 후(makeSnippet)는 fullText에 매칭이 있으면 반드시 보여주므로
+				// fullText 미스율이 곧 개선 후 스니펫 미스율이다.
+				const fullHit = terms.some(
+					(t) =>
+						t.length >= 2 && h.fullText.toLowerCase().includes(t),
+				);
+				if (!fullHit) fullMiss++;
 			}
 			const allKeys = [
 				...keys.dExact,
@@ -457,7 +465,7 @@ describe.skipIf(!LIVE_DB)("실측 하니스 (실제 index.db 사본)", () => {
 			);
 		}
 		report.push(
-			`[메트릭] 의미 top5 스니펫에 검색어 미노출: ${snippetMiss}/${snippetTotal} | 태그 top5 미리보기에 매칭 키 미노출: ${tagMiss}/${tagTotal} (7단계 개선 전 기준값)`,
+			`[메트릭] 의미 top5 스니펫 검색어 미노출: 고정 앞부분 ${snippetMiss}/${snippetTotal} → 매칭 부근 스니펫 적용 시 ${fullMiss}/${snippetTotal} | 태그 top5 미리보기 매칭 키 미노출: ${tagMiss}/${tagTotal} (칩이 근거 표시로 보완)`,
 		);
 	});
 });

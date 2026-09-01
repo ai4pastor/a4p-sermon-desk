@@ -413,6 +413,59 @@ export const WR_STYLES = `
 	font-size: 10px;
 	line-height: 1.5;
 }
+.wr-path {
+	color: var(--text-faint);
+	font-size: 10px;
+	line-height: 1.4;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.wr-keychips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 3px;
+	margin-top: 2px;
+}
+.wr-keychip {
+	display: inline-flex;
+	align-items: center;
+	padding: 0 6px;
+	border-radius: 8px;
+	font-size: 10px;
+	line-height: 1.6;
+	background: var(--background-modifier-border);
+	color: var(--text-muted);
+}
+.wr-keychip-dExact, .wr-keychip-dSyn {
+	color: var(--interactive-accent);
+	background: var(--background-modifier-hover);
+	border: 1px solid var(--interactive-accent);
+}
+.wr-keychip-tExact {
+	color: var(--color-cyan, #5fb3b3);
+	background: var(--background-modifier-hover);
+	border: 1px solid var(--color-cyan, #5fb3b3);
+}
+/* 벡터 발견 키 — 텍스트에 없는데 의미로 찾아낸 키임을 점선으로 구분 */
+.wr-keychip.is-vec {
+	border-style: dashed;
+}
+.wr-keychip-dVec {
+	color: var(--interactive-accent);
+	background: transparent;
+	border: 1px dashed var(--interactive-accent);
+}
+.wr-keychip-tVec {
+	color: var(--color-cyan, #5fb3b3);
+	background: transparent;
+	border: 1px dashed var(--color-cyan, #5fb3b3);
+}
+.wr-keychip-more {
+	font-size: 10px;
+	color: var(--text-faint);
+	align-self: center;
+}
 .wr-preview {
 	color: var(--text-muted);
 	font-size: var(--font-ui-smaller);

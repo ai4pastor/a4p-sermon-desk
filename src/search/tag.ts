@@ -1,6 +1,6 @@
 import { App, TFile, normalizePath } from "obsidian";
 import type { Database } from "sql.js";
-import type { HybridHit } from "./hybrid";
+import type { HybridHit, MatchedKey } from "./hybrid";
 import { tokenize } from "../morpheme";
 import { getDistinctDoctrineKeys, getDistinctTagKeys } from "../db/embeddings";
 
@@ -297,17 +297,32 @@ export function tagSearch(
 	const scores = new Map<string, number>();
 	// 실제 매칭 키 수 — matchedQueryTerms 표시용 (가중합 rawScore와 별개).
 	const matchCounts = new Map<string, number>();
+	// 추천 근거 키 — 카드 칩 표시용.
+	const keyMatches = new Map<string, MatchedKey[]>();
+	const addMatch = (path: string, key: string, kind: MatchedKey["kind"]) => {
+		const list = keyMatches.get(path);
+		if (list) list.push({ key, kind });
+		else keyMatches.set(path, [{ key, kind }]);
+	};
 	if (docRows[0]) {
 		for (const r of docRows[0].values) {
 			const path = String(r[0]);
 			const key = String(r[1]);
 			let w = 0;
-			if (keys.dExact.has(key)) w = W_DOCTRINE_EXACT;
-			else if (keys.dSyn.has(key)) w = W_DOCTRINE_SYN;
-			else if (keys.dVec.has(key)) w = W_DOCTRINE_VEC;
-			else continue;
+			let kind: MatchedKey["kind"];
+			if (keys.dExact.has(key)) {
+				w = W_DOCTRINE_EXACT;
+				kind = "dExact";
+			} else if (keys.dSyn.has(key)) {
+				w = W_DOCTRINE_SYN;
+				kind = "dSyn";
+			} else if (keys.dVec.has(key)) {
+				w = W_DOCTRINE_VEC;
+				kind = "dVec";
+			} else continue;
 			scores.set(path, (scores.get(path) ?? 0) + w);
 			matchCounts.set(path, (matchCounts.get(path) ?? 0) + 1);
+			addMatch(path, key, kind);
 		}
 	}
 	if (tagRows[0]) {
@@ -315,11 +330,17 @@ export function tagSearch(
 			const path = String(r[0]);
 			const key = String(r[1]);
 			let w = 0;
-			if (keys.tExact.has(key)) w = W_TAG_EXACT;
-			else if (keys.tVec.has(key)) w = W_TAG_VEC;
-			else continue;
+			let kind: MatchedKey["kind"];
+			if (keys.tExact.has(key)) {
+				w = W_TAG_EXACT;
+				kind = "tExact";
+			} else if (keys.tVec.has(key)) {
+				w = W_TAG_VEC;
+				kind = "tVec";
+			} else continue;
 			scores.set(path, (scores.get(path) ?? 0) + w);
 			matchCounts.set(path, (matchCounts.get(path) ?? 0) + 1);
+			addMatch(path, key, kind);
 		}
 	}
 
@@ -417,6 +438,7 @@ export function tagSearch(
 			headingMatched: false,
 			matchedQueryTerms: matchCounts.get(c.path) ?? 0,
 			queryTermsTotal: allKeys.size,
+			matchedKeys: keyMatches.get(c.path) ?? [],
 		});
 	}
 	return hits;

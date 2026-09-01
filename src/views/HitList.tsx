@@ -234,6 +234,10 @@ function HitCard(props: {
 		flags.push(`${hit.matchedQueryTerms}/${hit.queryTermsTotal}`);
 	}
 
+	const folder = folderOf(hit.notePath);
+	const snippet = makeSnippet(hit.fullText, hit.preview, queryTerms);
+	const chips = (hit.matchedKeys ?? []).slice(0, MAX_KEY_CHIPS);
+
 	return (
 		<div
 			class={`wr-card wr-card-${groupId}${expanded ? " wr-card-expanded" : ""}${isPinned ? " wr-card-pinned" : ""}`}
@@ -249,14 +253,37 @@ function HitCard(props: {
 			</div>
 			<div class="wr-body">
 				<div class="wr-title">{hit.noteTitle}</div>
+				{folder ? (
+					<div class="wr-path" title={folder}>
+						{shortFolder(folder)}
+					</div>
+				) : null}
 				{hit.heading ? (
 					<div class="wr-heading">{hit.heading}</div>
 				) : null}
 				<div
 					class={`wr-preview${expanded ? " wr-hidden" : ""}`}
 				>
-					{highlightText(hit.preview, queryTerms)}
+					{highlightText(snippet, queryTerms)}
 				</div>
+				{chips.length > 0 ? (
+					<div class="wr-keychips">
+						{chips.map((mk, i) => (
+							<span
+								key={i}
+								class={`wr-keychip wr-keychip-${mk.kind}${mk.kind === "dVec" || mk.kind === "tVec" ? " is-vec" : ""}`}
+								title={KEY_KIND_LABEL[mk.kind]}
+							>
+								{mk.key}
+							</span>
+						))}
+						{(hit.matchedKeys?.length ?? 0) > MAX_KEY_CHIPS ? (
+							<span class="wr-keychip-more">
+								+{(hit.matchedKeys?.length ?? 0) - MAX_KEY_CHIPS}
+							</span>
+						) : null}
+					</div>
+				) : null}
 				{eagerRender || expanded ? (
 					<MarkdownPanel
 						text={hit.fullText}
@@ -363,6 +390,57 @@ function MarkdownPanel(props: {
 			class={`wr-fulltext wr-md${props.hidden ? " wr-hidden" : ""}`}
 			ref={ref}
 		/>
+	);
+}
+
+const MAX_KEY_CHIPS = 6;
+
+const KEY_KIND_LABEL: Record<string, string> = {
+	dExact: "교리 키워드와 정확히 일치",
+	dSyn: "교리 동의어로 일치",
+	dVec: "의미가 비슷해 발견된 교리 (벡터)",
+	tExact: "태그와 정확히 일치",
+	tVec: "의미가 비슷해 발견된 태그 (벡터)",
+};
+
+function folderOf(notePath: string): string {
+	const idx = notePath.lastIndexOf("/");
+	return idx < 0 ? "" : notePath.slice(0, idx);
+}
+
+/** 사이드바 폭에 맞게 마지막 1~2 세그먼트만 표시 (전체는 title 속성). */
+function shortFolder(folder: string): string {
+	const parts = folder.split("/");
+	return parts.length <= 2 ? folder : `…/${parts.slice(-2).join("/")}`;
+}
+
+const SNIPPET_LEN = 160;
+
+/**
+ * 미리보기를 검색어가 실제 매칭된 부근으로 만든다. 매칭 토큰이 본문 어디에도
+ * 없으면(예: 태그 검색에서 키가 프론트매터에만 있는 경우) 기존 preview
+ * (본문 앞부분)로 폴백. 하이라이트가 보이지 않는 무의미한 스니펫 방지.
+ */
+function makeSnippet(
+	fullText: string,
+	preview: string,
+	terms: string[],
+): string {
+	const filtered = terms.filter((t) => t.length >= 2 && !isStopword(t));
+	if (!fullText || filtered.length === 0) return preview;
+	const lower = fullText.toLowerCase();
+	let first = -1;
+	for (const t of filtered) {
+		const i = lower.indexOf(t.toLowerCase());
+		if (i >= 0 && (first < 0 || i < first)) first = i;
+	}
+	if (first < 0) return preview;
+	const start = Math.max(0, first - Math.floor(SNIPPET_LEN / 3));
+	const end = Math.min(fullText.length, start + SNIPPET_LEN);
+	return (
+		(start > 0 ? "…" : "") +
+		fullText.slice(start, end) +
+		(end < fullText.length ? "…" : "")
 	);
 }
 

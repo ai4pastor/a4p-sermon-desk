@@ -21,6 +21,13 @@ export interface HybridHit {
 	headingMatched: boolean;
 	matchedQueryTerms: number;
 	queryTermsTotal: number;
+	/** 태그 검색 전용 — 이 노트가 추천된 근거 키 목록(카드 칩 표시용). */
+	matchedKeys?: MatchedKey[];
+}
+
+export interface MatchedKey {
+	key: string;
+	kind: "dExact" | "dSyn" | "dVec" | "tExact" | "tVec";
 }
 
 export interface HybridOptions {
@@ -44,6 +51,9 @@ const VECTOR_NOISE_THRESHOLD = 0.6;
 const MIN_REQUIRED_MATCH = 2;
 const DEFAULT_CANDIDATE_K = 30;
 const DEFAULT_TOP_N = 10;
+// 노트 전체 선택 같은 초대형 쿼리에서 IN(...) 바인딩 변수 한도 초과를 막는 상한.
+// coverage(matched/total)도 이 상한이 적용된 목록 기준으로 일관되게 계산된다.
+const MAX_QUERY_TERMS = 500;
 
 export function hybridSearch(
 	db: Database,
@@ -59,9 +69,9 @@ export function hybridSearch(
 
 	const uniqueTerms = Array.from(
 		new Set(queryTerms.filter((t) => t.length > 0)),
-	);
+	).slice(0, MAX_QUERY_TERMS);
 
-	const bm25Hits = bm25Search(db, queryTerms, candidateK);
+	const bm25Hits = bm25Search(db, uniqueTerms, candidateK);
 	const vectorHits = queryEmbedding
 		? vectorSearch(db, queryEmbedding, EMBEDDING_MODEL, candidateK)
 		: [];
