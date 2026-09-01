@@ -28,6 +28,39 @@ export const WR_STYLES = `
 	gap: 6px;
 	margin: 0 0 8px;
 }
+.wr-profile-row {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin: 0 0 8px;
+}
+.wr-profile-label {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+.wr-profile-chip {
+	display: inline-flex;
+	align-items: center;
+	padding: 2px 10px;
+	font-size: var(--font-ui-smaller);
+	background: var(--background-secondary);
+	color: var(--text-muted);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 12px;
+	cursor: pointer;
+	transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.wr-profile-chip:hover {
+	background: var(--background-modifier-hover);
+	border-color: var(--background-modifier-border-hover);
+}
+.wr-profile-chip.is-active {
+	border-color: var(--interactive-accent);
+	color: var(--interactive-accent);
+	background: var(--background-modifier-hover);
+	font-weight: 600;
+}
 .wr-btn-pause, .wr-btn-refresh, .wr-btn-mode {
 	display: inline-flex;
 	align-items: center;

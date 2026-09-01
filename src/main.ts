@@ -390,6 +390,7 @@ export default class WeightedRecallPlugin extends Plugin {
 		)) {
 			if (leaf.view instanceof RecallView) {
 				leaf.view.updateAutoSearchUI();
+				leaf.view.updateProfileUI();
 			}
 		}
 	}

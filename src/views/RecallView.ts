@@ -11,6 +11,7 @@ import {
 } from "obsidian";
 import type { Database } from "sql.js";
 import type { GroupId, WeightedRecallSettings } from "../settings";
+import { getActiveProfile, makeWeightResolver } from "../settings";
 import { preloadMorpheme, tokenize } from "../morpheme";
 import { hybridSearch, HybridHit } from "../search/hybrid";
 import { dedupeHits } from "../search/dedupe";
@@ -98,6 +99,7 @@ export class RecallView extends ItemView {
 	private modeSemanticEl: HTMLButtonElement | null = null;
 	private modeTagEl: HTMLButtonElement | null = null;
 	private modeChatEl: HTMLButtonElement | null = null;
+	private profileRowEl: HTMLElement | null = null;
 	/** 검색 ⇄ 채팅 화면 전환 (세션 전용 — 재시작 시 검색으로 시작). */
 	private viewMode: "search" | "chat" = "search";
 	private chatMountEl: HTMLElement | null = null;
@@ -192,6 +194,10 @@ export class RecallView extends ItemView {
 
 		this.updatePauseUI();
 		this.updateModeUI();
+
+		// 테마(프로파일) 칩 — 검색·채팅 모두에 적용되므로 searchUiEls에 넣지 않는다.
+		this.profileRowEl = root.createDiv({ cls: "wr-profile-row" });
+		this.updateProfileUI();
 
 		const relevanceRow = root.createDiv({ cls: "wr-relevance" });
 		relevanceRow.createSpan({
@@ -331,6 +337,67 @@ export class RecallView extends ItemView {
 			query: { text, mode: "selection" },
 			file,
 		});
+	}
+
+	/** 테마 칩 재구성 — 프로파일 CRUD·전환 시 호출 (설정 탭 → refreshRecallViewsUI 포함). */
+	updateProfileUI(): void {
+		const row = this.profileRowEl;
+		if (!row) return;
+		row.empty();
+		const { profiles } = this.host.settings;
+		// 프로파일이 1개뿐이면 칩 행 자체를 숨긴다.
+		row.toggleClass("wr-hidden", profiles.length <= 1);
+		if (profiles.length <= 1) return;
+		const activeId = getActiveProfile(this.host.settings).id;
+		row.createSpan({ text: "테마", cls: "wr-profile-label" });
+		for (const p of profiles) {
+			const btn = row.createEl("button", {
+				text: p.name,
+				cls: "wr-profile-chip",
+			});
+			btn.toggleClass("is-active", p.id === activeId);
+			btn.setAttr(
+				"title",
+				p.id === activeId
+					? `'${p.name}' 테마 사용 중`
+					: `'${p.name}' 테마로 전환 — 재색인 없이 즉시 반영됩니다`,
+			);
+			btn.addEventListener("click", () => {
+				void this.setActiveProfile(p.id);
+			});
+		}
+	}
+
+	private async setActiveProfile(id: string): Promise<void> {
+		if (this.host.settings.activeProfileId === id) return;
+		this.host.settings.activeProfileId = id;
+		await this.host.saveSettings();
+		this.updateProfileUI();
+		this.rerunLastSearch();
+	}
+
+	/**
+	 * 마지막 검색을 같은 쿼리로 재실행 (테마 전환 반영용).
+	 * refresh()를 그대로 부르면 사이드바 포커스 상태에서 getActiveFile()이 null이라
+	 * 결과가 지워질 수 있어, lastQueryCtx의 파일·텍스트를 명시 전달한다.
+	 * 쿼리 토큰·임베딩은 LRU 캐시 히트 → 추가 API 호출 0.
+	 */
+	private rerunLastSearch(): void {
+		const ctx = this.lastQueryCtx;
+		if (ctx) {
+			const file = this.app.vault.getAbstractFileByPath(ctx.filePath);
+			if (file instanceof TFile) {
+				void this.refresh({
+					manual: true,
+					query: { text: ctx.text, mode: ctx.mode },
+					file,
+				});
+				return;
+			}
+		}
+		if (this.getCurrentRender()) {
+			this.setStatus("테마 변경됨 — 다음 검색부터 적용됩니다.");
+		}
 	}
 
 	/** autoSearch 설정 변화를 뷰에 반영 (설정 탭 토글·뷰 열기 시 호출). */
@@ -577,12 +644,15 @@ export class RecallView extends ItemView {
 			// 토큰+임베딩을 한 번 계산해 의미·태그 경로가 공유 → 추가 API 호출 0.
 			const cached = await this.getOrCompute(ctx.text, apiKey || null);
 			if (gen !== this.refreshGen) return;
+			// 활성 테마 프로파일 가중치 해석기 — 의미·태그가 메모이즈를 공유.
+			const resolveWeight = makeWeightResolver(this.host.settings);
 			const tagPromise = this.runTagSearch(
 				gen,
 				db,
 				file,
 				ctx,
 				cached.embedding,
+				resolveWeight,
 			);
 			const semanticPromise = this.runSemanticSearch(
 				gen,
@@ -590,6 +660,7 @@ export class RecallView extends ItemView {
 				file,
 				ctx,
 				cached,
+				resolveWeight,
 			);
 			await Promise.all([tagPromise, semanticPromise]);
 		} catch (e) {
@@ -604,12 +675,14 @@ export class RecallView extends ItemView {
 		file: TFile,
 		ctx: QueryContext,
 		cached: CachedQuery,
+		resolveWeight: (notePath: string) => number,
 	): Promise<void> {
 		const queryTerms = cached.tokens;
 		const queryEmbedding = cached.embedding;
 		const t0 = performance.now();
 		const rawHits = hybridSearch(db, queryTerms, queryEmbedding, {
 			topN: TOP_N * 3,
+			resolveWeight,
 		});
 		const ms = performance.now() - t0;
 		const filtered = rawHits.filter((h) => h.notePath !== file.path);
@@ -629,6 +702,7 @@ export class RecallView extends ItemView {
 		file: TFile,
 		ctx: QueryContext,
 		queryEmbedding: Float32Array | null,
+		resolveWeight: (notePath: string) => number,
 	): Promise<void> {
 		const synonyms = this.host.settings.doctrineSynonyms;
 		if (this.synonymIndexSrc !== synonyms) {
@@ -702,6 +776,7 @@ export class RecallView extends ItemView {
 		const rawHits = tagSearch(db, keys, this.app, {
 			topN: TOP_N * 3,
 			excludePath: file.path,
+			resolveWeight,
 		});
 		const hits = dedupeHits(rawHits).slice(0, TOP_N);
 		const ms = performance.now() - t0;
@@ -991,8 +1066,10 @@ export class RecallView extends ItemView {
 			const cached = await this.getOrCompute(text, apiKey);
 			if (this.chatAbort !== abort) return;
 			const topK = this.host.settings.chatTopK;
+			// 채팅 RAG에도 활성 테마 가중치 적용 — 소스 선정이 테마 의도와 일관되게.
 			const rawHits = hybridSearch(db, cached.tokens, cached.embedding, {
 				topN: topK * 3,
+				resolveWeight: makeWeightResolver(this.host.settings),
 			});
 			const hits = capPerNote(rawHits, MAX_CHUNKS_PER_NOTE).slice(
 				0,
