@@ -162,6 +162,17 @@ describe("마이그레이션", () => {
 		const legacy = migrateLegacySettings({ folderWeights: [] });
 		expect(legacy?.chatModel).toBe(DEFAULT_CHAT_MODEL);
 	});
+
+	it("마이그레이션 결과에 insertMode 기본값(link)이 포함된다", () => {
+		const flat = migrateToFlat({
+			settingsVersion: 1,
+			categories: [],
+			folders: [],
+		});
+		expect(flat?.insertMode).toBe("link");
+		const legacy = migrateLegacySettings({ folderWeights: [] });
+		expect(legacy?.insertMode).toBe("link");
+	});
 });
 
 describe("normalizeSettings", () => {
@@ -202,6 +213,22 @@ describe("normalizeSettings", () => {
 		expect(out.chatModel).toBe(DEFAULT_CHAT_MODEL);
 		const ok = normalizeSettings(settingsWith({ chatModel: "gpt-4o-mini" }));
 		expect(ok.chatModel).toBe("gpt-4o-mini");
+	});
+
+	it("insertMode — 기본 link, 무효/누락 값은 link로, callout은 유지", () => {
+		expect(DEFAULT_SETTINGS.insertMode).toBe("link");
+		expect(
+			normalizeSettings(settingsWith({ insertMode: "bogus" as never }))
+				.insertMode,
+		).toBe("link");
+		// 0.7.0 이전 data.json에는 필드가 없다.
+		expect(
+			normalizeSettings(settingsWith({ insertMode: undefined as never }))
+				.insertMode,
+		).toBe("link");
+		expect(
+			normalizeSettings(settingsWith({ insertMode: "callout" })).insertMode,
+		).toBe("callout");
 	});
 });
 

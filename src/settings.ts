@@ -2,6 +2,9 @@ export type GroupId = "internal" | "external";
 
 export type SearchMode = "semantic" | "tag";
 
+/** 검색 결과를 노트에 넣는 방식 — 드래그·카드 버튼·팝업 버튼 공통. */
+export type InsertMode = "link" | "callout";
+
 export const CHAT_MODELS = [
 	"gpt-5-mini",
 	"gpt-4o-mini",
@@ -55,6 +58,8 @@ export interface WeightedRecallSettings {
 	excludedFolders: string[];
 	openaiApiKey: string;
 	searchMode: SearchMode;
+	/** 링크만 넣을지, 매칭 문단을 콜아웃으로 넣을지. Option(Alt)으로 1회 반전. */
+	insertMode: InsertMode;
 	/** 채팅 탭(노트 기반 Q&A)에 사용할 OpenAI 모델. */
 	chatModel: ChatModel;
 	/** 채팅 답변 시 참고할 자료(청크) 최대 개수. 3~20. */
@@ -107,6 +112,7 @@ export const DEFAULT_SETTINGS: WeightedRecallSettings = {
 	excludedFolders: [".trash/"],
 	openaiApiKey: "",
 	searchMode: "semantic",
+	insertMode: "link",
 	chatModel: DEFAULT_CHAT_MODEL,
 	chatTopK: DEFAULT_CHAT_TOP_K,
 	autoSearch: false,
@@ -208,6 +214,7 @@ export function migrateToFlat(data: unknown): WeightedRecallSettings | null {
 			: [...DEFAULT_SETTINGS.excludedFolders],
 		openaiApiKey: typeof d.openaiApiKey === "string" ? d.openaiApiKey : "",
 		searchMode: d.searchMode === "tag" ? "tag" : "semantic",
+		insertMode: "link",
 		chatModel: normalizeChatModel(d.chatModel),
 		chatTopK: clampChatTopK(d.chatTopK),
 		autoSearch: d.autoSearch === true,
@@ -251,6 +258,7 @@ export function migrateLegacySettings(
 			: [...DEFAULT_SETTINGS.excludedFolders],
 		openaiApiKey: typeof d.openaiApiKey === "string" ? d.openaiApiKey : "",
 		searchMode: "semantic",
+		insertMode: "link",
 		chatModel: DEFAULT_CHAT_MODEL,
 		chatTopK: DEFAULT_CHAT_TOP_K,
 		autoSearch: false,
@@ -364,6 +372,7 @@ export function normalizeSettings(
 				? settings.openaiApiKey
 				: "",
 		searchMode: settings.searchMode === "tag" ? "tag" : "semantic",
+		insertMode: settings.insertMode === "callout" ? "callout" : "link",
 		chatModel: normalizeChatModel(settings.chatModel),
 		chatTopK: clampChatTopK(settings.chatTopK),
 		autoSearch: settings.autoSearch === true,

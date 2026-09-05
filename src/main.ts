@@ -396,7 +396,7 @@ export default class WeightedRecallPlugin extends Plugin {
 		return leaf.view instanceof RecallView ? leaf.view : null;
 	}
 
-	/** autoSearch 설정 변경을 열린 뷰들에 즉시 반영 (설정 탭에서 호출). */
+	/** 설정 변경(자동 검색·테마·삽입 방식)을 열린 뷰들에 즉시 반영 (설정 탭에서 호출). */
 	refreshRecallViewsUI(): void {
 		for (const leaf of this.app.workspace.getLeavesOfType(
 			RECALL_VIEW_TYPE,
@@ -404,6 +404,7 @@ export default class WeightedRecallPlugin extends Plugin {
 			if (leaf.view instanceof RecallView) {
 				leaf.view.updateAutoSearchUI();
 				leaf.view.updateProfileUI();
+				leaf.view.updateInsertModeUI();
 			}
 		}
 	}

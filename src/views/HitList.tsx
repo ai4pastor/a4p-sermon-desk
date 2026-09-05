@@ -2,7 +2,8 @@ import { render } from "preact";
 import { useEffect, useRef } from "preact/hooks";
 import { App, Component, MarkdownRenderer } from "obsidian";
 import type { HybridHit } from "../search/hybrid";
-import { type GroupId, internalToWeight10 } from "../settings";
+import { type GroupId, type InsertMode, internalToWeight10 } from "../settings";
+import { INSERT_LABEL } from "../insert";
 import { isStopword } from "../morpheme";
 
 export interface HitListProps {
@@ -19,7 +20,8 @@ export interface HitListProps {
 	expandedChunkIds: Set<number>;
 	onToggleExpand: (chunkId: number) => void;
 	onTogglePin: (chunkId: number, hit: HybridHit) => void;
-	onInsertLink: (hit: HybridHit) => void;
+	insertMode: InsertMode;
+	onInsertLink: (hit: HybridHit, altKey: boolean) => void;
 	onDragLink: (e: DragEvent, hit: HybridHit) => void;
 	onTabChange: (tab: GroupId) => void;
 	onPinResize: (ratio: number) => void;
@@ -66,9 +68,10 @@ function HitList(props: HitListProps) {
 			expanded={props.expandedChunkIds.has(h.chunkId)}
 			isPinned={isPinned}
 			eagerRender={props.eagerRender}
+			insertMode={props.insertMode}
 			onToggle={() => props.onToggleExpand(h.chunkId)}
 			onTogglePin={() => props.onTogglePin(h.chunkId, h)}
-			onInsertLink={() => props.onInsertLink(h)}
+			onInsertLink={(alt) => props.onInsertLink(h, alt)}
 			onDragLink={(e) => props.onDragLink(e, h)}
 			onOpenNote={props.onOpenNote}
 			onOpenPopup={props.onOpenPopup}
@@ -201,9 +204,10 @@ function HitCard(props: {
 	expanded: boolean;
 	isPinned: boolean;
 	eagerRender: boolean;
+	insertMode: InsertMode;
 	onToggle: () => void;
 	onTogglePin: () => void;
-	onInsertLink: () => void;
+	onInsertLink: (altKey: boolean) => void;
 	onDragLink: (e: DragEvent) => void;
 	onOpenNote?: (h: HybridHit) => void;
 	onOpenPopup?: (h: HybridHit) => void;
@@ -218,6 +222,7 @@ function HitCard(props: {
 		expanded,
 		isPinned,
 		eagerRender,
+		insertMode,
 		onToggle,
 		onTogglePin,
 		onInsertLink,
@@ -329,12 +334,13 @@ function HitCard(props: {
 						) : null}
 						<button
 							class="wr-link-btn"
+							title="Option(Alt)+클릭: 반대 방식으로 삽입"
 							onClick={(e) => {
 								e.stopPropagation();
-								onInsertLink();
+								onInsertLink(e.altKey);
 							}}
 						>
-							🔗 링크 삽입
+							{INSERT_LABEL[insertMode]}
 						</button>
 						<button
 							class={`wr-pin-btn${isPinned ? " is-pinned" : ""}`}

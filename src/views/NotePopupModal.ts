@@ -8,11 +8,15 @@ import {
 	TFile,
 } from "obsidian";
 import type { HybridHit } from "../search/hybrid";
+import type { InsertMode } from "../settings";
+import { INSERT_LABEL } from "../insert";
 
 export interface PopupHost {
 	app: App;
+	/** 모달을 열 때의 삽입 방식 스냅샷 (버튼 라벨용). */
+	insertMode: InsertMode;
 	openHit(hit: HybridHit, pane: "split" | "tab"): Promise<void>;
-	insertLink(hit: HybridHit): void;
+	insertLink(hit: HybridHit, altKey: boolean): void;
 }
 
 /** 공백을 압축하고 NFC로 정규화한다 (앵커 매칭용). */
@@ -81,9 +85,12 @@ export class NotePopupModal extends Modal {
 			this.close();
 			void this.host.openHit(this.hit, "tab");
 		});
-		const linkBtn = actions.createEl("button", { text: "🔗 링크 삽입" });
-		linkBtn.addEventListener("click", () => {
-			this.host.insertLink(this.hit);
+		const linkBtn = actions.createEl("button", {
+			text: INSERT_LABEL[this.host.insertMode],
+			title: "Option(Alt)+클릭: 반대 방식으로 삽입",
+		});
+		linkBtn.addEventListener("click", (e) => {
+			this.host.insertLink(this.hit, e.altKey);
 		});
 
 		// 본문

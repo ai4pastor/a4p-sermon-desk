@@ -15,6 +15,7 @@ import {
 	DEFAULT_SETTINGS,
 	CHAT_MODELS,
 	type ChatModel,
+	type InsertMode,
 	CHAT_TOP_K_MIN,
 	CHAT_TOP_K_MAX,
 	clampChatTopK,
@@ -103,6 +104,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 		this.renderTagEmbeddings(containerEl);
 
 		this.renderChat(containerEl);
+		this.renderInsert(containerEl);
 		this.renderPerformance(containerEl);
 		this.renderResetButton(containerEl);
 	}
@@ -229,6 +231,26 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.chatTopK = clampChatTopK(value);
 						await this.plugin.saveSettings();
+					});
+			});
+	}
+
+	private renderInsert(containerEl: HTMLElement): void {
+		containerEl.createEl("h3", { text: "📎 삽입 방식" });
+		new Setting(containerEl)
+			.setName("검색 결과를 노트에 넣는 방식")
+			.setDesc(
+				"링크(기본): 카드를 드래그하거나 삽입 버튼을 누르면 위키링크만 들어갑니다. 콜아웃: 매칭된 문단이 접기 가능한 인용 콜아웃으로 통째로 들어가며, 제목 줄에 링크가 있어 백링크·그래프는 그대로 유지됩니다. 데스크 패널의 '삽입' 칩으로도 바꿀 수 있고, Option(Alt)을 누른 채 드래그·클릭하면 그 한 번만 반대 방식으로 들어갑니다.",
+			)
+			.addDropdown((dropdown) => {
+				dropdown.addOption("link", "🔗 링크");
+				dropdown.addOption("callout", "💬 콜아웃");
+				dropdown
+					.setValue(this.plugin.settings.insertMode)
+					.onChange(async (value) => {
+						this.plugin.settings.insertMode = value as InsertMode;
+						await this.plugin.saveSettings();
+						this.plugin.refreshRecallViewsUI();
 					});
 			});
 	}

@@ -10,8 +10,9 @@ import {
 	type Debouncer,
 } from "obsidian";
 import type { Database } from "sql.js";
-import type { GroupId, WeightedRecallSettings } from "../settings";
+import type { GroupId, InsertMode, WeightedRecallSettings } from "../settings";
 import { getActiveProfile, makeWeightResolver } from "../settings";
+import { buildCallout, calloutAlias, effectiveInsertMode } from "../insert";
 import { preloadMorpheme, tokenize } from "../morpheme";
 import { hybridSearch, HybridHit } from "../search/hybrid";
 import { dedupeHits } from "../search/dedupe";
@@ -100,6 +101,7 @@ export class RecallView extends ItemView {
 	private modeTagEl: HTMLButtonElement | null = null;
 	private modeChatEl: HTMLButtonElement | null = null;
 	private profileRowEl: HTMLElement | null = null;
+	private insertRowEl: HTMLElement | null = null;
 	/** 검색 ⇄ 채팅 화면 전환 (세션 전용 — 재시작 시 검색으로 시작). */
 	private viewMode: "search" | "chat" = "search";
 	private chatMountEl: HTMLElement | null = null;
@@ -199,6 +201,11 @@ export class RecallView extends ItemView {
 		this.profileRowEl = root.createDiv({ cls: "wr-profile-row" });
 		this.updateProfileUI();
 
+		// 삽입 방식 칩 — 검색 결과 전용이므로 searchUiEls에 넣어 채팅에서는 숨긴다.
+		const insertRow = root.createDiv({ cls: "wr-profile-row" });
+		this.insertRowEl = insertRow;
+		this.updateInsertModeUI();
+
 		const relevanceRow = root.createDiv({ cls: "wr-relevance" });
 		relevanceRow.createSpan({
 			text: "관련도",
@@ -238,7 +245,7 @@ export class RecallView extends ItemView {
 		this.chatMountEl = root.createDiv({
 			cls: "wr-chat-mount wr-hidden",
 		});
-		this.searchUiEls = [relevanceRow, this.statusEl, this.mountEl];
+		this.searchUiEls = [insertRow, relevanceRow, this.statusEl, this.mountEl];
 
 		this.registerEvent(
 			this.app.workspace.on("active-leaf-change", () => {
@@ -366,6 +373,43 @@ export class RecallView extends ItemView {
 				void this.setActiveProfile(p.id);
 			});
 		}
+	}
+
+	/** 삽입 방식 칩 재구성 — 칩 클릭·설정 탭 변경 시 호출 (refreshRecallViewsUI 포함). */
+	updateInsertModeUI(): void {
+		const row = this.insertRowEl;
+		if (!row) return;
+		row.empty();
+		const current = this.host.settings.insertMode;
+		row.createSpan({ text: "삽입", cls: "wr-profile-label" });
+		const chips: [InsertMode, string, string][] = [
+			["link", "🔗 링크", "위키링크만 넣습니다"],
+			[
+				"callout",
+				"💬 콜아웃",
+				"매칭 문단을 인용 콜아웃으로 넣습니다 (제목 줄 링크로 백링크 유지)",
+			],
+		];
+		for (const [mode, text, desc] of chips) {
+			const btn = row.createEl("button", { text, cls: "wr-profile-chip" });
+			btn.toggleClass("is-active", mode === current);
+			btn.setAttr(
+				"title",
+				`${desc} — Option(Alt)을 누른 채 드래그·클릭하면 이번만 반대 방식`,
+			);
+			btn.addEventListener("click", () => {
+				void this.setInsertMode(mode);
+			});
+		}
+		// 카드 버튼 라벨(링크 삽입 ⇄ 콜아웃 삽입) 갱신 — 렌더 상태가 없으면 no-op.
+		this.doRender();
+	}
+
+	private async setInsertMode(mode: InsertMode): Promise<void> {
+		if (this.host.settings.insertMode === mode) return;
+		this.host.settings.insertMode = mode;
+		await this.host.saveSettings();
+		this.updateInsertModeUI();
 	}
 
 	private async setActiveProfile(id: string): Promise<void> {
@@ -852,6 +896,7 @@ export class RecallView extends ItemView {
 				queryTerms: state.queryTerms,
 				activeTab: this.activeTab,
 				eagerRender: this.host.settings.eagerRender,
+				insertMode: this.host.settings.insertMode,
 				pinRatio: this.pinRatio,
 				app: this.app,
 				component: this,
@@ -865,7 +910,7 @@ export class RecallView extends ItemView {
 					this.doRender();
 				},
 				onTogglePin: (chunkId, hit) => this.togglePin(chunkId, hit),
-				onInsertLink: (h) => this.insertLink(h),
+				onInsertLink: (h, alt) => this.insertLink(h, alt),
 				onDragLink: (e, h) => this.handleDragLink(e, h),
 				onTabChange: (tab) => this.setActiveTab(tab),
 				onPinResize: (r) => this.setPinRatio(r),
@@ -875,7 +920,8 @@ export class RecallView extends ItemView {
 						{
 							app: this.app,
 							openHit: (hit, pane) => this.openHit(hit, pane),
-							insertLink: (hit) => this.insertLink(hit),
+							insertMode: this.host.settings.insertMode,
+							insertLink: (hit, alt) => this.insertLink(hit, alt),
 						},
 						h,
 					).open(),
@@ -976,7 +1022,8 @@ export class RecallView extends ItemView {
 				{
 					app: this.app,
 					openHit: (hit, pane) => this.openHit(hit, pane),
-					insertLink: (hit) => this.insertLink(hit),
+					insertMode: this.host.settings.insertMode,
+					insertLink: (hit, alt) => this.insertLink(hit, alt),
 				},
 				h,
 			).open();
@@ -1164,7 +1211,7 @@ export class RecallView extends ItemView {
 		return null;
 	}
 
-	private buildWikilink(hit: HybridHit): string {
+	private buildWikilink(hit: HybridHit, alias?: string): string {
 		const file = this.app.vault.getAbstractFileByPath(hit.notePath);
 		const sourcePath = this.getSourcePath();
 		if (file instanceof TFile) {
@@ -1172,31 +1219,62 @@ export class RecallView extends ItemView {
 				file,
 				sourcePath,
 				hit.heading ? `#${hit.heading}` : "",
+				alias,
 			);
 		}
 		const name =
 			hit.notePath.replace(/\.md$/, "").split("/").pop() ??
 			hit.notePath;
+		const tail = alias ? `|${alias}` : "";
 		return hit.heading
-			? `[[${name}#${hit.heading}]]`
-			: `[[${name}]]`;
+			? `[[${name}#${hit.heading}${tail}]]`
+			: `[[${name}${tail}]]`;
 	}
 
-	private insertLink(hit: HybridHit): void {
+	/** 매칭 청크를 제목 줄 링크(제목 › 헤딩)가 달린 인용 콜아웃으로. */
+	private buildCalloutBlock(hit: HybridHit): string {
+		const link = this.buildWikilink(
+			hit,
+			calloutAlias(hit.noteTitle, hit.heading),
+		);
+		return buildCallout(link, hit.fullText);
+	}
+
+	private insertLink(hit: HybridHit, altKey = false): void {
 		const view = this.findMarkdownView();
 		if (!view) {
 			new Notice("A4P Sermon Desk: 마크다운 노트를 먼저 열어주세요");
 			return;
 		}
-		const link = this.buildWikilink(hit);
-		view.editor.replaceSelection(link);
-		new Notice("A4P Sermon Desk: 링크 삽입됨");
+		const mode = effectiveInsertMode(this.host.settings.insertMode, altKey);
+		if (mode === "link") {
+			view.editor.replaceSelection(this.buildWikilink(hit));
+			new Notice("A4P Sermon Desk: 링크 삽입됨");
+			return;
+		}
+		// 콜아웃은 블록이라 자기 줄에서 시작해야 하고, 커서 뒤 텍스트가
+		// 인용에 흡수(lazy continuation)되지 않게 빈 줄로 끊는다.
+		const { editor } = view;
+		const from = editor.getCursor("from");
+		const to = editor.getCursor("to");
+		const before = editor.getLine(from.line).slice(0, from.ch);
+		const after = editor.getLine(to.line).slice(to.ch);
+		const prefix = before.trim() ? "\n" : "";
+		const suffix = after.trim() ? "\n" : "";
+		editor.replaceSelection(prefix + this.buildCalloutBlock(hit) + suffix);
+		new Notice("A4P Sermon Desk: 콜아웃 삽입됨");
 	}
 
 	private handleDragLink(e: DragEvent, hit: HybridHit): void {
 		if (!e.dataTransfer) return;
-		const link = this.buildWikilink(hit);
-		e.dataTransfer.setData("text/plain", link);
+		const mode = effectiveInsertMode(this.host.settings.insertMode, e.altKey);
+		// 드롭 위치를 dragstart 시점엔 모르므로 콜아웃은 앞뒤 개행으로 자기완결:
+		// 앞 \n = 문단 중간에 떨어져도 자기 줄에서 시작, 뒤 \n = 다음 문단 흡수 방지.
+		const payload =
+			mode === "link"
+				? this.buildWikilink(hit)
+				: `\n${this.buildCalloutBlock(hit)}\n`;
+		e.dataTransfer.setData("text/plain", payload);
 		e.dataTransfer.effectAllowed = "copy";
 	}
 }
