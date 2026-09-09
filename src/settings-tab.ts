@@ -386,7 +386,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 	private renderIdeaMemo(containerEl: HTMLElement): void {
 		containerEl.createEl("h3", { text: "💡 아이디어 메모" });
 		containerEl.createEl("p", {
-			text: "본문에서 문장을 선택하고 우클릭 → ‘아이디어 메모로 생성하기’. 아래 폴더에 선택 내용을 인용 콜아웃 + 원본 링크로 담은 새 노트를 만들어 새 탭에 엽니다. 원본 노트는 바뀌지 않습니다. 명령 팔레트의 ‘선택 텍스트로 아이디어 메모 생성’에 단축키를 붙일 수도 있습니다.",
+			text: "본문에서 문장을 선택하고 우클릭 → ‘아이디어 메모로 생성하기’. 아래 폴더에 선택 내용을 인용 콜아웃 + 원본 링크로 담고 그 아래 ‘## 내 생각’ 섹션을 붙인 새 노트를 만들어 새 탭에 엽니다. 원본 노트는 바뀌지 않습니다. 명령 팔레트의 ‘선택 텍스트로 아이디어 메모 생성’에 단축키를 붙일 수도 있습니다.",
 			cls: "setting-item-description",
 		});
 

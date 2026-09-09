@@ -95,9 +95,13 @@ export interface IdeaMemoInput {
 	now: Date;
 }
 
+/** 콜아웃 아래에 붙는 생각 정리 섹션 제목. 커서는 이 제목 아래 빈 줄에 놓인다. */
+export const IDEA_MEMO_THOUGHTS_HEADING = "## 내 생각";
+
 /**
- * 아이디어 메모 본문: frontmatter(created/modified/source?) + 빈 줄 + 인용 콜아웃 + 빈 줄 1개.
- * 끝의 빈 줄은 템플릿 실행 시 커서 착지점 — 템플릿 출력이 콜아웃을 쪼개지 않게 한다.
+ * 아이디어 메모 본문: frontmatter(created/modified/source?) + 빈 줄 + 인용 콜아웃
+ * + 빈 줄 + `## 내 생각` + 빈 줄 1개. 끝의 빈 줄은 바로 생각을 적는 자리이자
+ * 템플릿 실행 시 커서 착지점 — 템플릿 출력이 콜아웃을 쪼개지 않게 한다.
  */
 export function composeIdeaMemo(input: IdeaMemoInput): string {
 	const stamp = formatFmDate(input.now);
@@ -108,5 +112,5 @@ export function composeIdeaMemo(input: IdeaMemoInput): string {
 		input.selection,
 		input.calloutType,
 	);
-	return `---\n${fm.join("\n")}\n---\n\n${callout}\n`;
+	return `---\n${fm.join("\n")}\n---\n\n${callout}\n${IDEA_MEMO_THOUGHTS_HEADING}\n\n`;
 }

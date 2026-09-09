@@ -1,6 +1,7 @@
 // 아이디어 메모 순수 함수 테스트 — src/idea-memo.ts (obsidian 미의존).
 import { describe, it, expect } from "vitest";
 import {
+	IDEA_MEMO_THOUGHTS_HEADING,
 	IDEA_TITLE_MAX,
 	composeIdeaMemo,
 	deriveIdeaTitle,
@@ -91,7 +92,7 @@ describe("uniqueIdeaPath — 충돌 시 ' 2', ' 3'", () => {
 });
 
 describe("composeIdeaMemo — frontmatter + 인용 콜아웃", () => {
-	it("created/modified/source + 콜아웃 + 끝 빈 줄", () => {
+	it("created/modified/source + 콜아웃 + ## 내 생각 + 끝 빈 줄", () => {
 		expect(
 			composeIdeaMemo({
 				selection: "첫 문장.\n둘째 문장.",
@@ -109,8 +110,20 @@ describe("composeIdeaMemo — frontmatter + 인용 콜아웃", () => {
 				"> [!quote]+ [[원본 노트]]\n" +
 				"> 첫 문장.\n" +
 				"> 둘째 문장.\n" +
+				"\n" +
+				"## 내 생각\n" +
 				"\n",
 		);
+	});
+	it("콜아웃 아래 빈 줄 → ## 내 생각 → 빈 줄(커서 착지점)로 끝난다", () => {
+		expect(IDEA_MEMO_THOUGHTS_HEADING).toBe("## 내 생각");
+		const out = composeIdeaMemo({
+			selection: "본문",
+			sourceLink: "[[x]]",
+			calloutType: "quote",
+			now: NOW,
+		});
+		expect(out.endsWith("> 본문\n\n## 내 생각\n\n")).toBe(true);
 	});
 	it("sourceLink가 비면 source 줄을 생략하고 제목 줄 뒤 공백이 없다", () => {
 		const out = composeIdeaMemo({

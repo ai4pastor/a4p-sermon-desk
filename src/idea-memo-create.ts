@@ -169,7 +169,7 @@ export async function createIdeaMemo(
 		);
 		return;
 	}
-	// 커서를 본문 끝(콜아웃 아래 빈 줄)에 두어 템플릿 출력이 콜아웃을 쪼개지 않게 한다.
+	// 커서를 본문 끝(## 내 생각 아래 빈 줄)에 두어 템플릿 출력이 콜아웃을 쪼개지 않게 한다.
 	const ed = view.editor;
 	const last = ed.lastLine();
 	ed.setCursor({ line: last, ch: ed.getLine(last).length });
