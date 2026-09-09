@@ -11,6 +11,7 @@ import {
 	normalizeSettings,
 } from "./settings";
 import { WeightedRecallSettingTab } from "./settings-tab";
+import { createIdeaMemo } from "./idea-memo-create";
 import { loadOrCreateDb, saveDb } from "./db/persistence";
 import { retokenizeAllChunks, runIndex } from "./indexer/indexer";
 import {
@@ -114,6 +115,15 @@ export default class WeightedRecallPlugin extends Plugin {
 			},
 		});
 
+		// 선택 텍스트를 아이디어 메모(새 노트)로 — 우클릭 메뉴와 같은 동작, 단축키 바인딩용.
+		this.addCommand({
+			id: "create-idea-memo",
+			name: "선택 텍스트로 아이디어 메모 생성",
+			editorCallback: (editor, ctx) => {
+				void createIdeaMemo(this, editor, ctx.file ?? null);
+			},
+		});
+
 		this.addRibbonIcon("search", "설교 준비 데스크 열기", () => {
 			void this.openRecallView(true);
 		});
@@ -121,6 +131,17 @@ export default class WeightedRecallPlugin extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on("editor-menu", (menu, editor, info) => {
 				const file = info.file;
+				// 선택이 있으면(길이 무관) 아이디어 메모 항목 — 원본 파일을 몰라도 메모는 만든다.
+				if (editor.getSelection().trim()) {
+					menu.addItem((item) =>
+						item
+							.setTitle("💡 아이디어 메모로 생성하기")
+							.setIcon("lightbulb")
+							.onClick(() => {
+								void createIdeaMemo(this, editor, file ?? null);
+							}),
+					);
+				}
 				if (!file) return;
 				// 메뉴 빌드 시점에 쿼리를 캡처 — 뷰를 여는 동안 active leaf가
 				// 바뀌어도 검색 쿼리가 흔들리지 않는다. 선택이 짧으면 커서 문단.

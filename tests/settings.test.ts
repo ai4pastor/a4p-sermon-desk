@@ -3,6 +3,8 @@ import {
 	DEFAULT_SETTINGS,
 	DEFAULT_CHAT_MODEL,
 	DEFAULT_CHAT_TOP_K,
+	DEFAULT_IDEA_CALLOUT,
+	normalizeIdeaCallout,
 	clampChatTopK,
 	clampWeight10,
 	weightToInternal,
@@ -173,6 +175,21 @@ describe("마이그레이션", () => {
 		const legacy = migrateLegacySettings({ folderWeights: [] });
 		expect(legacy?.insertMode).toBe("link");
 	});
+
+	it("마이그레이션 결과에 아이디어 메모 3필드 기본값이 포함된다", () => {
+		const flat = migrateToFlat({
+			settingsVersion: 1,
+			categories: [],
+			folders: [],
+		});
+		expect(flat?.ideaMemoFolder).toBe("");
+		expect(flat?.ideaMemoTemplate).toBe("");
+		expect(flat?.ideaMemoCallout).toBe("quote");
+		const legacy = migrateLegacySettings({ folderWeights: [] });
+		expect(legacy?.ideaMemoFolder).toBe("");
+		expect(legacy?.ideaMemoTemplate).toBe("");
+		expect(legacy?.ideaMemoCallout).toBe("quote");
+	});
 });
 
 describe("normalizeSettings", () => {
@@ -229,6 +246,37 @@ describe("normalizeSettings", () => {
 		expect(
 			normalizeSettings(settingsWith({ insertMode: "callout" })).insertMode,
 		).toBe("callout");
+	});
+
+	it("아이디어 메모 — 기본 빈 폴더·빈 템플릿·quote, 누락·비문자열은 기본값, 콜아웃 종류는 허용 문자만", () => {
+		expect(DEFAULT_SETTINGS.ideaMemoFolder).toBe("");
+		expect(DEFAULT_SETTINGS.ideaMemoTemplate).toBe("");
+		expect(DEFAULT_SETTINGS.ideaMemoCallout).toBe(DEFAULT_IDEA_CALLOUT);
+		// 0.9.0 이전 data.json에는 필드가 없다.
+		const missing = normalizeSettings(
+			settingsWith({
+				ideaMemoFolder: undefined as never,
+				ideaMemoTemplate: undefined as never,
+				ideaMemoCallout: undefined as never,
+			}),
+		);
+		expect(missing.ideaMemoFolder).toBe("");
+		expect(missing.ideaMemoTemplate).toBe("");
+		expect(missing.ideaMemoCallout).toBe("quote");
+		const set = normalizeSettings(
+			settingsWith({
+				ideaMemoFolder: " 100. notes/140. Ideas/ ",
+				ideaMemoTemplate: "900. Settings/901. Templates/T.md",
+				ideaMemoCallout: "확장필요",
+			}),
+		);
+		expect(set.ideaMemoFolder).toBe("100. notes/140. Ideas/");
+		expect(set.ideaMemoTemplate).toBe("900. Settings/901. Templates/T.md");
+		expect(set.ideaMemoCallout).toBe("확장필요");
+		expect(normalizeIdeaCallout("bad type!")).toBe("quote");
+		expect(normalizeIdeaCallout("  note ")).toBe("note");
+		expect(normalizeIdeaCallout(3)).toBe("quote");
+		expect(normalizeIdeaCallout("")).toBe("quote");
 	});
 
 	it("showAnalysis — 기본 false, 누락/비불리언은 false, true만 유지 (마이그레이션 포함)", () => {

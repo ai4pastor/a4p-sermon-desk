@@ -5,6 +5,9 @@ import {
 	ButtonComponent,
 	TextComponent,
 	Notice,
+	TFile,
+	TFolder,
+	normalizePath,
 } from "obsidian";
 import type WeightedRecallPlugin from "./main";
 import {
@@ -28,8 +31,12 @@ import {
 	getActiveProfile,
 	makeProfileId,
 	normalizeSettings,
+	isUnderFolder,
+	DEFAULT_IDEA_CALLOUT,
 } from "./settings";
 import { FolderSuggest } from "./folder-suggest";
+import { FileSuggest } from "./file-suggest";
+import { hasTemplater, templaterTemplatesFolder } from "./idea-memo-create";
 import { confirmModal } from "./views/ConfirmModal";
 import {
 	embedDoctrineKeys,
@@ -113,6 +120,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 
 		this.renderChat(containerEl);
 		this.renderInsert(containerEl);
+		this.renderIdeaMemo(containerEl);
 		this.renderPerformance(containerEl);
 		this.renderResetButton(containerEl);
 	}
@@ -371,6 +379,116 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 						this.plugin.settings.showAnalysis = value;
 						await this.plugin.saveSettings();
 						this.plugin.refreshRecallViewsUI();
+					});
+			});
+	}
+
+	private renderIdeaMemo(containerEl: HTMLElement): void {
+		containerEl.createEl("h3", { text: "💡 아이디어 메모" });
+		containerEl.createEl("p", {
+			text: "본문에서 문장을 선택하고 우클릭 → ‘아이디어 메모로 생성하기’. 아래 폴더에 선택 내용을 인용 콜아웃 + 원본 링크로 담은 새 노트를 만들어 새 탭에 엽니다. 원본 노트는 바뀌지 않습니다. 명령 팔레트의 ‘선택 텍스트로 아이디어 메모 생성’에 단축키를 붙일 수도 있습니다.",
+			cls: "setting-item-description",
+		});
+
+		new Setting(containerEl)
+			.setName("메모를 저장할 폴더")
+			.setDesc(
+				"비워 두면 동작하지 않고 안내만 표시합니다. 폴더는 미리 만들어 두세요 — 플러그인은 폴더를 만들지 않습니다.",
+			)
+			.addText((text) => {
+				text.setPlaceholder("폴더 경로 입력...")
+					.setValue(this.plugin.settings.ideaMemoFolder)
+					.onChange(async (value) => {
+						this.plugin.settings.ideaMemoFolder = value.trim();
+						await this.plugin.saveSettings();
+					});
+				new FolderSuggest(this.app, text.inputEl);
+			})
+			.addButton((btn: ButtonComponent) => {
+				btn.setButtonText("검증").onClick(() => renderFolderStatus());
+			});
+		const folderStatus = containerEl.createEl("p", {
+			cls: "setting-item-description",
+		});
+		const renderFolderStatus = () => {
+			const raw = this.plugin.settings.ideaMemoFolder.trim();
+			if (!raw) {
+				folderStatus.setText(
+					"폴더가 비어 있습니다 — 우클릭 메뉴는 안내만 표시합니다.",
+				);
+				return;
+			}
+			const folder = this.app.vault.getAbstractFileByPath(normalizePath(raw));
+			if (!(folder instanceof TFolder)) {
+				folderStatus.setText(
+					`❌ 폴더를 찾을 수 없습니다: ${raw} — 옵시디언에서 먼저 만들어 주세요(플러그인은 폴더를 만들지 않습니다).`,
+				);
+				return;
+			}
+			const count = this.app.vault
+				.getMarkdownFiles()
+				.filter((f) => isUnderFolder(f.path, folder.path)).length;
+			folderStatus.setText(
+				`✅ 폴더 확인: ${folder.path}/ — 노트 ${count}개(하위 폴더 포함)`,
+			);
+		};
+		renderFolderStatus();
+
+		new Setting(containerEl)
+			.setName("생성 후 적용할 Templater 템플릿 (선택)")
+			.setDesc(
+				"비워 두면 적용하지 않습니다. 지정하면 메모를 만들어 연 뒤 Templater의 템플릿 삽입 단축키와 똑같이 그 템플릿을 실행합니다(예: WORD 분류 템플릿). Templater 플러그인이 필요합니다.",
+			)
+			.addText((text) => {
+				text.setPlaceholder("템플릿 .md 경로 입력...")
+					.setValue(this.plugin.settings.ideaMemoTemplate)
+					.onChange(async (value) => {
+						this.plugin.settings.ideaMemoTemplate = value.trim();
+						await this.plugin.saveSettings();
+					});
+				new FileSuggest(
+					this.app,
+					text.inputEl,
+					templaterTemplatesFolder(this.app),
+				);
+			})
+			.addButton((btn: ButtonComponent) => {
+				btn.setButtonText("검증").onClick(() => renderTemplateStatus());
+			});
+		const templateStatus = containerEl.createEl("p", {
+			cls: "setting-item-description",
+		});
+		const renderTemplateStatus = () => {
+			const raw = this.plugin.settings.ideaMemoTemplate.trim();
+			if (!raw) {
+				templateStatus.setText(
+					"템플릿이 비어 있습니다 — 메모만 만들고 템플릿은 실행하지 않습니다.",
+				);
+				return;
+			}
+			const file = this.app.vault.getAbstractFileByPath(normalizePath(raw));
+			const fileMsg =
+				file instanceof TFile && file.extension === "md"
+					? `✅ 템플릿 확인: ${file.path}`
+					: `❌ 템플릿 파일을 찾을 수 없습니다: ${raw}`;
+			const tpMsg = hasTemplater(this.app)
+				? "✅ Templater 사용 가능"
+				: "❌ Templater가 꺼져 있거나 설치되지 않았습니다 — 템플릿 단계는 건너뜁니다";
+			templateStatus.setText(`${fileMsg} · ${tpMsg}`);
+		};
+		renderTemplateStatus();
+
+		new Setting(containerEl)
+			.setName("콜아웃 종류")
+			.setDesc(
+				"선택 텍스트를 감싸는 콜아웃의 종류입니다. 기본 quote. note·info·확장필요 등 옵시디언 콜아웃 이름을 공백·기호 없이 적으세요. 잘못된 값은 quote로 처리합니다.",
+			)
+			.addText((text) => {
+				text.setPlaceholder(DEFAULT_IDEA_CALLOUT)
+					.setValue(this.plugin.settings.ideaMemoCallout)
+					.onChange(async (value) => {
+						this.plugin.settings.ideaMemoCallout = value.trim();
+						await this.plugin.saveSettings();
 					});
 			});
 	}

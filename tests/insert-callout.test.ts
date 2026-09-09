@@ -89,6 +89,10 @@ describe("buildCallout — 접기 가능 인용 콜아웃", () => {
 			"> [!quote]+ [a](b.md#c)\n> 본문\n",
 		);
 	});
+	it("세 번째 인자로 콜아웃 종류를 바꾸고, 링크가 비면 제목 줄 뒤 공백이 없다", () => {
+		expect(buildCallout("[[x]]", "a", "note")).toBe("> [!note]+ [[x]]\n> a\n");
+		expect(buildCallout("", "a")).toBe("> [!quote]+\n> a\n");
+	});
 });
 
 describe("INSERT_LABEL", () => {

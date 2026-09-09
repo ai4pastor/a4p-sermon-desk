@@ -41,10 +41,15 @@ export function calloutAlias(
 
 /**
  * 매칭 청크를 `> [!quote]+ <link>` 접기 가능 인용 콜아웃으로 조립한다.
+ * type으로 콜아웃 종류를 바꿀 수 있고(기본 quote), link가 비면 제목 줄 뒤 공백을 붙이지 않는다.
  * 개행 1개로 끝나며 앞 개행은 붙이지 않는다(드롭 위치에 따른 패딩은 호출자 책임).
  */
-export function buildCallout(link: string, body: string): string {
-	const head = `> [!quote]+ ${link}\n`;
+export function buildCallout(
+	link: string,
+	body: string,
+	type = "quote",
+): string {
+	const head = link ? `> [!${type}]+ ${link}\n` : `> [!${type}]+\n`;
 	const text = body
 		.replace(/\r\n?/g, "\n")
 		.replace(/[ \t]+$/gm, "")

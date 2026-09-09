@@ -71,6 +71,12 @@ export interface WeightedRecallSettings {
 	searchMode: SearchMode;
 	/** 링크만 넣을지, 매칭 문단을 콜아웃으로 넣을지. Option(Alt)으로 1회 반전. */
 	insertMode: InsertMode;
+	/** 💡 아이디어 메모를 저장할 폴더(FolderSuggest 규약: 끝 슬래시). 비어 있으면 기능 비활성 + 안내. */
+	ideaMemoFolder: string;
+	/** 아이디어 메모 생성 직후 Templater로 실행할 템플릿 .md 경로. 비어 있으면 실행 안 함. */
+	ideaMemoTemplate: string;
+	/** 아이디어 메모 콜아웃 종류 — `> [!<type>]+`. 한국어 종류(확장필요 등) 허용. */
+	ideaMemoCallout: string;
 	/** 채팅 탭(노트 기반 Q&A)에 사용할 OpenAI 모델. */
 	chatModel: ChatModel;
 	/** 채팅 답변 시 참고할 자료(청크) 최대 개수. 3~20. */
@@ -91,6 +97,18 @@ export interface WeightedRecallSettings {
 }
 
 export const SETTINGS_VERSION = 3;
+
+/** 아이디어 메모 콜아웃 기본 종류. */
+export const DEFAULT_IDEA_CALLOUT = "quote";
+/** 콜아웃 종류로 허용하는 문자 — 글자·숫자·_·- (한국어 포함, 공백·기호 불가). */
+const IDEA_CALLOUT_RE = /^[\p{L}\p{N}_-]+$/u;
+
+/** 콜아웃 종류 정규화 — 문자열이 아니거나 허용 문자 밖이면 기본 quote. */
+export function normalizeIdeaCallout(v: unknown): string {
+	if (typeof v !== "string") return DEFAULT_IDEA_CALLOUT;
+	const t = v.trim();
+	return IDEA_CALLOUT_RE.test(t) ? t : DEFAULT_IDEA_CALLOUT;
+}
 
 export const WEIGHT_MIN = 0;
 export const WEIGHT_MAX = 10;
@@ -130,6 +148,9 @@ export const DEFAULT_SETTINGS: WeightedRecallSettings = {
 	openaiApiKey: "",
 	searchMode: "semantic",
 	insertMode: "link",
+	ideaMemoFolder: "",
+	ideaMemoTemplate: "",
+	ideaMemoCallout: DEFAULT_IDEA_CALLOUT,
 	chatModel: DEFAULT_CHAT_MODEL,
 	chatTopK: DEFAULT_CHAT_TOP_K,
 	autoSearch: false,
@@ -235,6 +256,9 @@ export function migrateToFlat(data: unknown): WeightedRecallSettings | null {
 		openaiApiKey: typeof d.openaiApiKey === "string" ? d.openaiApiKey : "",
 		searchMode: d.searchMode === "tag" ? "tag" : "semantic",
 		insertMode: "link",
+	ideaMemoFolder: "",
+	ideaMemoTemplate: "",
+	ideaMemoCallout: DEFAULT_IDEA_CALLOUT,
 		chatModel: normalizeChatModel(d.chatModel),
 		chatTopK: clampChatTopK(d.chatTopK),
 		autoSearch: d.autoSearch === true,
@@ -282,6 +306,9 @@ export function migrateLegacySettings(
 		openaiApiKey: typeof d.openaiApiKey === "string" ? d.openaiApiKey : "",
 		searchMode: "semantic",
 		insertMode: "link",
+	ideaMemoFolder: "",
+	ideaMemoTemplate: "",
+	ideaMemoCallout: DEFAULT_IDEA_CALLOUT,
 		chatModel: DEFAULT_CHAT_MODEL,
 		chatTopK: DEFAULT_CHAT_TOP_K,
 		autoSearch: false,
@@ -399,6 +426,15 @@ export function normalizeSettings(
 				: "",
 		searchMode: settings.searchMode === "tag" ? "tag" : "semantic",
 		insertMode: settings.insertMode === "callout" ? "callout" : "link",
+		ideaMemoFolder:
+			typeof settings.ideaMemoFolder === "string"
+				? settings.ideaMemoFolder.trim()
+				: "",
+		ideaMemoTemplate:
+			typeof settings.ideaMemoTemplate === "string"
+				? settings.ideaMemoTemplate.trim()
+				: "",
+		ideaMemoCallout: normalizeIdeaCallout(settings.ideaMemoCallout),
 		chatModel: normalizeChatModel(settings.chatModel),
 		chatTopK: clampChatTopK(settings.chatTopK),
 		autoSearch: settings.autoSearch === true,
