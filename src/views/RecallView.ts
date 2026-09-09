@@ -130,9 +130,11 @@ export class RecallView extends ItemView {
 	private modeSemanticEl: HTMLButtonElement | null = null;
 	private modeTagEl: HTMLButtonElement | null = null;
 	private modeChatEl: HTMLButtonElement | null = null;
-	private profileRowEl: HTMLElement | null = null;
-	private insertRowEl: HTMLElement | null = null;
-	private countRowEl: HTMLElement | null = null;
+	private themeGroupEl: HTMLElement | null = null;
+	private insertGroupEl: HTMLElement | null = null;
+	private countGroupEl: HTMLElement | null = null;
+	/** 🔬 분석 토글 칩 — onOpen에서 1회 생성, updateAnalysisUI가 상태만 갱신. */
+	private analysisChipEl: HTMLButtonElement | null = null;
 	/** 🔬 분석 켬일 때 결과 위에 뜨는 쿼리 요약 한 줄. */
 	private summaryEl: HTMLElement | null = null;
 	/** 검색 ⇄ 채팅 화면 전환 (세션 전용 — 재시작 시 검색으로 시작). */
@@ -193,62 +195,47 @@ export class RecallView extends ItemView {
 		const root = this.containerEl.children[1] ?? this.containerEl;
 		root.empty();
 		root.addClass("wr-root");
-		root.createEl("h4", { text: "A4P Sermon Desk", cls: "wr-h" });
-
-		const controls = root.createDiv({ cls: "wr-controls" });
-		this.pauseToggleEl = controls.createEl("button", {
-			cls: "wr-btn-pause",
-		});
-		this.pauseToggleEl.addEventListener("click", () => this.togglePause());
-		this.modeSemanticEl = controls.createEl("button", {
-			cls: "wr-btn-mode wr-btn-mode-semantic",
-		});
+		// ── 헤더: 모드 세그먼트(전폭 3등분) + 툴바(테마 | 삽입) ──
+		const header = root.createDiv({ cls: "wr-header" });
+		const seg = header.createDiv({ cls: "wr-seg" });
+		this.modeSemanticEl = seg.createEl("button", { cls: "wr-seg-btn" });
 		this.modeSemanticEl.addEventListener("click", () => {
 			this.setViewMode("search");
 			void this.setSearchMode("semantic");
 		});
 		setIcon(this.modeSemanticEl, "brain");
-		this.modeSemanticEl.createSpan({ text: " 의미 검색" });
-		this.modeTagEl = controls.createEl("button", {
-			cls: "wr-btn-mode wr-btn-mode-tag",
-		});
+		this.modeSemanticEl.createSpan({ text: "의미 검색" });
+		this.modeTagEl = seg.createEl("button", { cls: "wr-seg-btn" });
 		this.modeTagEl.addEventListener("click", () => {
 			this.setViewMode("search");
 			void this.setSearchMode("tag");
 		});
 		setIcon(this.modeTagEl, "tag");
-		this.modeTagEl.createSpan({ text: " 태그 검색" });
-		this.modeChatEl = controls.createEl("button", {
-			cls: "wr-btn-mode wr-btn-mode-chat",
-		});
+		this.modeTagEl.createSpan({ text: "태그 검색" });
+		this.modeChatEl = seg.createEl("button", { cls: "wr-seg-btn" });
 		this.modeChatEl.addEventListener("click", () =>
 			this.setViewMode("chat"),
 		);
 		setIcon(this.modeChatEl, "message-circle");
-		this.modeChatEl.createSpan({ text: " 채팅" });
-
-		this.updatePauseUI();
+		this.modeChatEl.createSpan({ text: "채팅" });
 		this.updateModeUI();
 
-		// 테마(프로파일) 칩 — 검색·채팅 모두에 적용되므로 searchUiEls에 넣지 않는다.
-		this.profileRowEl = root.createDiv({ cls: "wr-profile-row" });
-		this.updateProfileUI();
-
-		// 삽입 방식 칩 — 검색 결과 전용이므로 searchUiEls에 넣어 채팅에서는 숨긴다.
-		const insertRow = root.createDiv({ cls: "wr-profile-row" });
-		this.insertRowEl = insertRow;
-		this.updateInsertModeUI();
-
-		// 결과 개수 칩(10/20/50) — 검색 결과 전용.
-		const countRow = root.createDiv({ cls: "wr-profile-row" });
-		this.countRowEl = countRow;
-		this.updateResultCountUI();
-
-		const relevanceRow = root.createDiv({ cls: "wr-relevance" });
-		relevanceRow.createSpan({
-			text: "관련도",
-			cls: "wr-relevance-label",
+		// 툴바 — 테마 그룹(검색·채팅 공통이라 searchUiEls 제외) + 삽입 그룹(검색 전용, 오른쫌 정렬).
+		// 좁아지면 삽입 그룹이 통째로 다음 줄로 내려간다(그룹 안 세그먼트는 쪼개지지 않음).
+		const toolbar = header.createDiv({ cls: "wr-toolbar" });
+		this.themeGroupEl = toolbar.createDiv({
+			cls: "wr-tb-group wr-tb-group-theme",
 		});
+		this.updateProfileUI();
+		const insertGroup = toolbar.createDiv({
+			cls: "wr-tb-group wr-tb-group-insert",
+		});
+		this.insertGroupEl = insertGroup;
+
+		// ── 결과 보기 카드: 관련도 슬라이더 + (결과 개수 | 🔬 분석) — 검색 전용 ──
+		const filterCard = root.createDiv({ cls: "wr-filter" });
+		const relevanceRow = filterCard.createDiv({ cls: "wr-relevance" });
+		relevanceRow.createSpan({ text: "관련도", cls: "wr-row-label" });
 		relevanceRow.createSpan({
 			text: "엄격",
 			cls: "wr-relevance-end wr-relevance-end-strict",
@@ -275,10 +262,34 @@ export class RecallView extends ItemView {
 			this.handleRelevanceInput(),
 		);
 
-		this.statusEl = root.createEl("p", {
+		const viewRow = filterCard.createDiv({ cls: "wr-filter-view" });
+		this.countGroupEl = viewRow.createDiv({
+			cls: "wr-tb-group wr-tb-group-count",
+		});
+		this.updateResultCountUI();
+		this.analysisChipEl = viewRow.createEl("button", {
+			cls: "wr-chip wr-chip-toggle",
+		});
+		setIcon(this.analysisChipEl, "microscope");
+		this.analysisChipEl.createSpan({ text: "분석" });
+		this.analysisChipEl.addEventListener("click", () => {
+			void this.setShowAnalysis(!this.host.settings.showAnalysis);
+		});
+		// 삽입 그룹은 분석 칩이 만들어진 뒤 채운다(updateInsertModeUI → updateAnalysisUI).
+		this.updateInsertModeUI();
+
+		// ── 상태줄 + 자동 갱신 일시정지 버튼(autoSearch 켬 + 검색 모드일 때만 표시) ──
+		const statusRow = root.createDiv({ cls: "wr-status-row" });
+		this.statusEl = statusRow.createEl("p", {
 			text: "활성 노트를 분석합니다…",
 			cls: "wr-status",
 		});
+		this.pauseToggleEl = statusRow.createEl("button", {
+			cls: "wr-btn-pause",
+		});
+		this.pauseToggleEl.addEventListener("click", () => this.togglePause());
+		this.updatePauseUI();
+
 		// 요약은 wrap(검색 UI 토글) 안의 inner(분석 토글)로 — 두 숨김 조건이 서로 덮어쓰지 않게.
 		const summaryWrap = root.createDiv({ cls: "wr-query-summary-wrap" });
 		this.summaryEl = summaryWrap.createDiv({
@@ -288,11 +299,11 @@ export class RecallView extends ItemView {
 		this.chatMountEl = root.createDiv({
 			cls: "wr-chat-mount wr-hidden",
 		});
+		// 채팅 모드에서 숨기는 검색 전용 UI — 툴바 전체가 아니라 삽입 그룹만(테마는 공통).
 		this.searchUiEls = [
-			insertRow,
-			countRow,
-			relevanceRow,
-			this.statusEl,
+			insertGroup,
+			filterCard,
+			statusRow,
 			summaryWrap,
 			this.mountEl,
 		];
@@ -402,19 +413,19 @@ export class RecallView extends ItemView {
 
 	/** 테마 칩 재구성 — 프로파일 CRUD·전환 시 호출 (설정 탭 → refreshRecallViewsUI 포함). */
 	updateProfileUI(): void {
-		const row = this.profileRowEl;
+		const row = this.themeGroupEl;
 		if (!row) return;
 		row.empty();
 		const { profiles } = this.host.settings;
-		// 프로파일이 1개뿐이면 칩 행 자체를 숨긴다.
+		// 프로파일이 1개뿐이면 테마 그룹을 숨긴다(삽입 그룹은 왼쪽으로 붙는다).
 		row.toggleClass("wr-hidden", profiles.length <= 1);
 		if (profiles.length <= 1) return;
 		const activeId = getActiveProfile(this.host.settings).id;
-		row.createSpan({ text: "테마", cls: "wr-profile-label" });
+		row.createSpan({ text: "테마", cls: "wr-row-label" });
 		for (const p of profiles) {
 			const btn = row.createEl("button", {
 				text: p.name,
-				cls: "wr-profile-chip",
+				cls: "wr-chip",
 			});
 			btn.toggleClass("is-active", p.id === activeId);
 			btn.setAttr(
@@ -429,23 +440,27 @@ export class RecallView extends ItemView {
 		}
 	}
 
-	/** 삽입 방식 칩 재구성 — 칩 클릭·설정 탭 변경 시 호출 (refreshRecallViewsUI 포함). */
+	/**
+	 * 삽입 방식 세그먼트(링크 | 콜아웃) 재구성 — 클릭·설정 탭 변경 시 호출 (refreshRecallViewsUI 포함).
+	 * 🔬 분석 칩 상태도 함께 갱신한다(설정 탭 showAnalysis 토글이 이 경로로 들어온다).
+	 */
 	updateInsertModeUI(): void {
-		const row = this.insertRowEl;
-		if (!row) return;
-		row.empty();
+		const group = this.insertGroupEl;
+		if (!group) return;
+		group.empty();
 		const current = this.host.settings.insertMode;
-		row.createSpan({ text: "삽입", cls: "wr-profile-label" });
+		group.createSpan({ text: "삽입", cls: "wr-row-label" });
+		const seg = group.createDiv({ cls: "wr-seg wr-seg-sm" });
 		const chips: [InsertMode, string, string][] = [
-			["link", "🔗 링크", "위키링크만 넣습니다"],
+			["link", "링크", "위키링크만 넣습니다"],
 			[
 				"callout",
-				"💬 콜아웃",
+				"콜아웃",
 				"매칭 문단을 인용 콜아웃으로 넣습니다 (제목 줄 링크로 백링크 유지)",
 			],
 		];
 		for (const [mode, text, desc] of chips) {
-			const btn = row.createEl("button", { text, cls: "wr-profile-chip" });
+			const btn = seg.createEl("button", { text, cls: "wr-seg-btn" });
 			btn.toggleClass("is-active", mode === current);
 			btn.setAttr(
 				"title",
@@ -455,24 +470,24 @@ export class RecallView extends ItemView {
 				void this.setInsertMode(mode);
 			});
 		}
-		// 🔬 분석 칩 — 같은 행 오른쪽 끝. 검색 결과 전용이라 이 행(searchUiEls)에 둔다.
-		const analysisOn = this.host.settings.showAnalysis;
-		const analysisBtn = row.createEl("button", {
-			text: "🔬 분석",
-			cls: "wr-profile-chip wr-chip-analysis",
-		});
-		analysisBtn.toggleClass("is-active", analysisOn);
-		analysisBtn.setAttr(
+		this.updateAnalysisUI();
+		// 카드 버튼 라벨(링크 삽입 ⇄ 콜아웃 삽입)·분석 표시 갱신 — 렌더 상태가 없으면 no-op.
+		this.doRender();
+	}
+
+	/** 🔬 분석 토글 칩의 켬/꺼짐 표시만 갱신 (칩 자체는 onOpen에서 1회 생성). */
+	private updateAnalysisUI(): void {
+		const btn = this.analysisChipEl;
+		if (!btn) return;
+		const on = this.host.settings.showAnalysis;
+		btn.toggleClass("is-active", on);
+		btn.setAttr("aria-pressed", String(on));
+		btn.setAttr(
 			"title",
-			analysisOn
+			on
 				? "점수 구성(어휘·의미·가중치)과 '왜 이 결과?' 근거를 카드에 표시 중 — 클릭해 숨김"
 				: "각 결과가 왜 나왔는지 — 점수 구성 막대와 '왜 이 결과?' 근거를 카드에 표시",
 		);
-		analysisBtn.addEventListener("click", () => {
-			void this.setShowAnalysis(!analysisOn);
-		});
-		// 카드 버튼 라벨(링크 삽입 ⇄ 콜아웃 삽입)·분석 표시 갱신 — 렌더 상태가 없으면 no-op.
-		this.doRender();
 	}
 
 	private async setInsertMode(mode: InsertMode): Promise<void> {
@@ -491,15 +506,16 @@ export class RecallView extends ItemView {
 
 	/** 결과 개수 칩 재구성 — 칩 클릭·설정 탭 변경 시 호출 (refreshRecallViewsUI 포함). */
 	updateResultCountUI(): void {
-		const row = this.countRowEl;
-		if (!row) return;
-		row.empty();
+		const group = this.countGroupEl;
+		if (!group) return;
+		group.empty();
 		const current = this.host.settings.resultCount;
-		row.createSpan({ text: "결과", cls: "wr-profile-label" });
+		group.createSpan({ text: "결과", cls: "wr-row-label" });
+		const seg = group.createDiv({ cls: "wr-seg wr-seg-sm" });
 		for (const n of RESULT_COUNTS) {
-			const btn = row.createEl("button", {
+			const btn = seg.createEl("button", {
 				text: `${n}개`,
-				cls: "wr-profile-chip",
+				cls: "wr-seg-btn",
 			});
 			btn.toggleClass("is-active", n === current);
 			btn.setAttr(

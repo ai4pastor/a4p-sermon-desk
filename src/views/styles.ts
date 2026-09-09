@@ -12,176 +12,252 @@ export const WR_STYLES = `
 	display: flex;
 	flex-direction: column;
 }
-.wr-h {
-	margin: 0 0 4px;
-	font-size: var(--font-ui-medium);
-	font-weight: 600;
-	color: var(--text-normal);
-}
 .wr-status {
-	margin: 0 0 12px;
+	margin: 0;
 	color: var(--text-muted);
 	font-size: var(--font-ui-smaller);
 }
-.wr-controls {
+/* ── 헤더: 모드 세그먼트(전폭 3등분) + 툴바(테마 | 삽입) ── */
+.wr-header {
 	display: flex;
+	flex-direction: column;
 	gap: 6px;
 	margin: 0 0 8px;
+	flex: 0 0 auto;
 }
-.wr-profile-row {
-	display: flex;
-	align-items: center;
-	flex-wrap: wrap;
-	gap: 6px;
-	margin: 0 0 8px;
+.wr-seg {
+	display: grid;
+	grid-template-columns: repeat(3, 1fr);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m, 8px);
+	overflow: hidden;
+	background: var(--background-secondary);
 }
-.wr-profile-label {
-	font-size: var(--font-ui-smaller);
-	color: var(--text-muted);
+/* 삽입·결과 소형 세그먼트 — 내용 폭만큼 */
+.wr-seg-sm {
+	display: inline-grid;
+	grid-template-columns: none;
+	grid-auto-flow: column;
+	grid-auto-columns: auto;
 }
-.wr-profile-chip {
+/* .wr-root 접두: Obsidian 기본 button(높이·그림자) 규칙보다 우선하도록 */
+.wr-root .wr-seg-btn {
 	display: inline-flex;
 	align-items: center;
-	padding: 2px 10px;
-	font-size: var(--font-ui-smaller);
-	background: var(--background-secondary);
+	justify-content: center;
+	gap: 4px;
+	min-width: 0;
+	padding: 5px 6px;
+	height: auto;
+	box-shadow: none;
+	border: 0;
+	border-radius: 0;
+	background: transparent;
 	color: var(--text-muted);
-	border: 1px solid var(--background-modifier-border);
-	border-radius: 12px;
+	font-size: var(--font-ui-smaller);
+	white-space: nowrap;
 	cursor: pointer;
-	transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+	transition: background-color 0.12s ease, color 0.12s ease;
 }
-.wr-profile-chip:hover {
-	background: var(--background-modifier-hover);
-	border-color: var(--background-modifier-border-hover);
+.wr-seg-btn + .wr-seg-btn {
+	border-left: 1px solid var(--background-modifier-border);
 }
-.wr-profile-chip.is-active {
-	border-color: var(--interactive-accent);
-	color: var(--interactive-accent);
+.wr-root .wr-seg-btn:hover {
 	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+.wr-root .wr-seg > .wr-seg-btn.is-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
 	font-weight: 600;
 }
-.wr-btn-pause, .wr-btn-refresh, .wr-btn-mode {
+.wr-root .wr-seg-sm > .wr-seg-btn {
+	padding: 2px 8px;
+	font-size: 11px;
+	line-height: 18px;
+}
+/* 2차 컨트롤(삽입·결과)은 채움 대신 외곽선 강조 — 1차(모드)와 위계 구분 */
+.wr-root .wr-seg-sm > .wr-seg-btn.is-active {
+	background: var(--background-modifier-hover);
+	color: var(--text-accent);
+	box-shadow: inset 0 0 0 1px var(--interactive-accent);
+	font-weight: 600;
+}
+.wr-seg-btn svg, .wr-chip svg, .wr-btn-pause svg {
+	width: 13px;
+	height: 13px;
+	flex: 0 0 auto;
+}
+.wr-toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 8px;
+}
+/* 채팅 모드 + 프로파일 1개 → 그룹이 모두 숨겨진 빈 툴바 줄 제거 */
+.wr-toolbar:not(:has(> :not(.wr-hidden))) {
+	display: none;
+}
+.wr-tb-group {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px;
+	min-width: 0;
+}
+.wr-tb-group-insert {
+	flex: 0 0 auto;
+	flex-wrap: nowrap;
+	margin-left: auto;
+}
+.wr-tb-group-theme.wr-hidden + .wr-tb-group-insert {
+	margin-left: 0;
+}
+.wr-row-label {
+	font-size: 11px;
+	color: var(--text-faint);
+	white-space: nowrap;
+	margin-right: 2px;
+}
+.wr-root .wr-chip {
 	display: inline-flex;
 	align-items: center;
 	gap: 4px;
-	padding: 4px 10px;
+	padding: 2px 10px;
+	height: auto;
+	box-shadow: none;
 	font-size: var(--font-ui-smaller);
 	background: var(--background-secondary);
-	color: var(--text-normal);
+	color: var(--text-muted);
 	border: 1px solid var(--background-modifier-border);
-	border-radius: 4px;
+	border-radius: 999px;
 	cursor: pointer;
 	transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
-.wr-btn-pause:hover, .wr-btn-refresh:hover, .wr-btn-mode:hover {
+.wr-root .wr-chip:hover {
 	background: var(--background-modifier-hover);
 	border-color: var(--background-modifier-border-hover);
 }
-.wr-btn-pause.is-paused {
-	border-color: var(--text-accent);
+.wr-root .wr-chip.is-active {
+	border-color: var(--interactive-accent);
+	color: var(--text-accent);
+	background: var(--background-modifier-hover);
+	font-weight: 600;
+}
+/* on/off 토글(🔬 분석)은 라디오형 칩과 구분되게 채움으로 강조 */
+.wr-root .wr-chip-toggle.is-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	border-color: var(--interactive-accent);
+}
+/* ── 결과 보기 카드: 관련도 슬라이더 + (결과 개수 | 분석) ── */
+.wr-filter {
+	display: grid;
+	gap: 6px;
+	padding: 8px 10px;
+	margin: 0 0 8px;
+	border-radius: var(--radius-m, 8px);
+	background: var(--background-secondary);
+}
+.wr-filter-view {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+.wr-filter-view .wr-chip-toggle {
+	margin-left: auto;
+}
+.wr-status-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 0 0 8px;
+}
+.wr-status-row .wr-status {
+	flex: 1;
+	min-width: 0;
+}
+.wr-root .wr-btn-pause {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 2px 6px;
+	height: auto;
+	box-shadow: none;
+	border: 0;
+	background: transparent;
+	color: var(--text-muted);
+	font-size: 11px;
+	white-space: nowrap;
+	cursor: pointer;
+}
+.wr-root .wr-btn-pause:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+.wr-root .wr-btn-pause.is-paused {
 	color: var(--text-accent);
 }
-.wr-btn-mode-semantic.is-active {
-	border-color: var(--interactive-accent);
-	color: var(--interactive-accent);
-	background: var(--background-modifier-hover);
-	font-weight: 600;
-}
-.wr-btn-mode-tag.is-active {
-	border-color: var(--color-cyan, #5fb3b3);
-	color: var(--color-cyan, #5fb3b3);
-	background: var(--background-modifier-hover);
-	font-weight: 600;
-}
-.wr-btn-mode-chat.is-active {
-	border-color: var(--color-purple, #a882ff);
-	color: var(--color-purple, #a882ff);
-	background: var(--background-modifier-hover);
-	font-weight: 600;
-}
-.wr-btn-pause svg, .wr-btn-refresh svg, .wr-btn-mode svg {
-	width: 14px;
-	height: 14px;
-}
+/* 관련도 슬라이더 — 카드 안 한 줄. 색은 테마 변수만(라이트·다크 공통) */
 .wr-relevance {
 	display: flex;
 	align-items: center;
-	gap: 10px;
-	margin: 0 0 12px;
-	padding: 10px 12px;
-	background: var(--background-secondary);
-	border-radius: 10px;
+	gap: 8px;
 	font-size: var(--font-ui-smaller);
 	color: var(--text-muted);
-}
-.wr-relevance-label {
-	font-weight: 700;
-	color: var(--text-normal);
-	letter-spacing: 0.2px;
-	font-size: 13px;
-	padding: 4px 10px;
-	border-radius: 4px;
-	background: var(--background-modifier-border);
 }
 .wr-relevance-end {
 	font-size: 10px;
 	font-weight: 600;
 	letter-spacing: 0.3px;
-	padding: 2px 8px;
-	border-radius: 999px;
-}
-.wr-relevance-end-strict {
-	background: #f87171;
-	color: #fff;
-}
-.wr-relevance-end-loose {
-	background: #fcd34d;
-	color: #78350f;
+	color: var(--text-muted);
 }
 .wr-relevance-slider {
 	flex: 1;
+	min-width: 0;
 	cursor: pointer;
 	-webkit-appearance: none;
 	appearance: none;
 	height: 6px;
-	background: linear-gradient(to right, #f87171 0%, #fcd34d 100%);
+	background: linear-gradient(to right, var(--color-red) 0%, var(--color-yellow) 100%);
 	border-radius: 3px;
 	outline: none;
+	opacity: 0.85;
 }
 .wr-relevance-slider::-webkit-slider-thumb {
 	-webkit-appearance: none;
-	width: 18px;
-	height: 18px;
+	width: 16px;
+	height: 16px;
 	border-radius: 50%;
 	background: var(--background-primary);
-	border: 2px solid var(--text-normal);
+	border: 2px solid var(--text-muted);
 	cursor: pointer;
-	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
-	transition: transform 0.12s ease;
+	box-shadow: var(--shadow-s);
+	transition: transform 0.12s ease, border-color 0.12s ease;
 }
 .wr-relevance-slider::-webkit-slider-thumb:hover {
-	transform: scale(1.18);
+	transform: scale(1.15);
+	border-color: var(--text-normal);
 }
 .wr-relevance-slider::-moz-range-thumb {
-	width: 18px;
-	height: 18px;
+	width: 16px;
+	height: 16px;
 	border-radius: 50%;
 	background: var(--background-primary);
-	border: 2px solid var(--text-normal);
+	border: 2px solid var(--text-muted);
 	cursor: pointer;
-	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+	box-shadow: var(--shadow-s);
 }
 .wr-relevance-value {
 	font-family: var(--font-monospace);
-	min-width: 26px;
+	min-width: 24px;
 	text-align: center;
-	font-weight: 700;
-	font-size: 12px;
-	padding: 3px 8px;
-	background: #fb923c;
-	color: #fff;
-	border-radius: 6px;
+	font-weight: 600;
+	font-size: 11px;
+	padding: 2px 7px;
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	border-radius: 999px;
 }
 .wr-list {
 	flex: 1;
@@ -708,9 +784,6 @@ export const WR_STYLES = `
 	font-family: var(--font-monospace);
 	color: var(--text-accent);
 }
-.wr-chip-analysis {
-	margin-left: auto;
-}
 /* ── 🔬 분석: 쿼리 요약 헤더 ── */
 .wr-query-summary {
 	margin: 0 0 6px;
@@ -949,30 +1022,6 @@ export const WR_STYLES = `
 }
 .wr-onboarding-steps li {
 	margin: 2px 0;
-}
-.wr-chip-list {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 6px;
-	margin: 6px 0 12px;
-}
-.wr-chip {
-	display: inline-flex;
-	align-items: center;
-	gap: 4px;
-	padding: 2px 8px;
-	font-size: var(--font-ui-smaller);
-	background: var(--background-modifier-hover);
-	border: 1px solid var(--background-modifier-border);
-	border-radius: 12px;
-}
-.wr-chip-x {
-	cursor: pointer;
-	color: var(--text-muted);
-	font-size: 0.85em;
-}
-.wr-chip-x:hover {
-	color: var(--text-error);
 }
 .wr-syn-list {
 	display: flex;
