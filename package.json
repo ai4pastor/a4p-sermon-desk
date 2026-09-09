@@ -1,6 +1,6 @@
 {
   "name": "a4p-sermon-desk",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "private": true,
   "description": "A4P Sermon Desk — 설교 준비 보조 옵시디언 플러그인",
   "main": "main.js",

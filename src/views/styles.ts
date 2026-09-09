@@ -17,21 +17,25 @@ export const WR_STYLES = `
 	color: var(--text-muted);
 	font-size: var(--font-ui-smaller);
 }
-/* ── 헤더: 모드 세그먼트(전폭 3등분) + 툴바(테마 | 삽입) ── */
+/* ── 헤더: 모드 세그먼트(전폭 3등분) + 툴바(테마 | 삽입) ──
+   글자 위계: 모드 13px/500(활성 700) › 칩 12px/500(활성 700) › 라벨 11px/700 muted › 상태 12px muted.
+   구분선: 구역 사이는 --background-modifier-border-hover(진함), 카드 안쪽은 --background-modifier-border(연함). */
 .wr-header {
 	display: flex;
 	flex-direction: column;
-	gap: 6px;
-	margin: 0 0 8px;
+	gap: 8px;
+	margin: 0 0 10px;
+	padding: 0 0 10px;
 	flex: 0 0 auto;
+	border-bottom: 1px solid var(--background-modifier-border-hover);
 }
 .wr-seg {
 	display: grid;
 	grid-template-columns: repeat(3, 1fr);
-	border: 1px solid var(--background-modifier-border);
+	border: 1px solid var(--background-modifier-border-hover);
 	border-radius: var(--radius-m, 8px);
 	overflow: hidden;
-	background: var(--background-secondary);
+	background: var(--background-primary-alt);
 }
 /* 삽입·결과 소형 세그먼트 — 내용 폭만큼 */
 .wr-seg-sm {
@@ -39,28 +43,30 @@ export const WR_STYLES = `
 	grid-template-columns: none;
 	grid-auto-flow: column;
 	grid-auto-columns: auto;
+	background: var(--background-primary);
 }
 /* .wr-root 접두: Obsidian 기본 button(높이·그림자) 규칙보다 우선하도록 */
 .wr-root .wr-seg-btn {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	gap: 4px;
+	gap: 5px;
 	min-width: 0;
-	padding: 5px 6px;
+	padding: 6px 6px;
 	height: auto;
 	box-shadow: none;
 	border: 0;
 	border-radius: 0;
 	background: transparent;
-	color: var(--text-muted);
-	font-size: var(--font-ui-smaller);
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+	font-weight: 500;
 	white-space: nowrap;
 	cursor: pointer;
 	transition: background-color 0.12s ease, color 0.12s ease;
 }
 .wr-seg-btn + .wr-seg-btn {
-	border-left: 1px solid var(--background-modifier-border);
+	border-left: 1px solid var(--background-modifier-border-hover);
 }
 .wr-root .wr-seg-btn:hover {
 	background: var(--background-modifier-hover);
@@ -69,30 +75,36 @@ export const WR_STYLES = `
 .wr-root .wr-seg > .wr-seg-btn.is-active {
 	background: var(--interactive-accent);
 	color: var(--text-on-accent);
-	font-weight: 600;
+	font-weight: 700;
 }
 .wr-root .wr-seg-sm > .wr-seg-btn {
-	padding: 2px 8px;
-	font-size: 11px;
+	padding: 2px 9px;
+	font-size: var(--font-ui-smaller);
+	font-weight: 500;
 	line-height: 18px;
+	color: var(--text-muted);
 }
 /* 2차 컨트롤(삽입·결과)은 채움 대신 외곽선 강조 — 1차(모드)와 위계 구분 */
 .wr-root .wr-seg-sm > .wr-seg-btn.is-active {
 	background: var(--background-modifier-hover);
 	color: var(--text-accent);
-	box-shadow: inset 0 0 0 1px var(--interactive-accent);
-	font-weight: 600;
+	box-shadow: inset 0 0 0 1.5px var(--interactive-accent);
+	font-weight: 700;
 }
 .wr-seg-btn svg, .wr-chip svg, .wr-btn-pause svg {
-	width: 13px;
-	height: 13px;
+	width: 14px;
+	height: 14px;
 	flex: 0 0 auto;
+}
+.wr-seg-sm .wr-seg-btn svg {
+	width: 12px;
+	height: 12px;
 }
 .wr-toolbar {
 	display: flex;
 	flex-wrap: wrap;
 	align-items: center;
-	gap: 6px 8px;
+	gap: 6px 10px;
 }
 /* 채팅 모드 + 프로파일 1개 → 그룹이 모두 숨겨진 빈 툴바 줄 제거 */
 .wr-toolbar:not(:has(> :not(.wr-hidden))) {
@@ -115,9 +127,11 @@ export const WR_STYLES = `
 }
 .wr-row-label {
 	font-size: 11px;
-	color: var(--text-faint);
+	font-weight: 700;
+	letter-spacing: 0.2px;
+	color: var(--text-muted);
 	white-space: nowrap;
-	margin-right: 2px;
+	margin-right: 3px;
 }
 .wr-root .wr-chip {
 	display: inline-flex;
@@ -127,35 +141,39 @@ export const WR_STYLES = `
 	height: auto;
 	box-shadow: none;
 	font-size: var(--font-ui-smaller);
-	background: var(--background-secondary);
-	color: var(--text-muted);
-	border: 1px solid var(--background-modifier-border);
+	font-weight: 500;
+	background: var(--background-primary);
+	color: var(--text-normal);
+	border: 1px solid var(--background-modifier-border-hover);
 	border-radius: 999px;
 	cursor: pointer;
 	transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
 .wr-root .wr-chip:hover {
 	background: var(--background-modifier-hover);
-	border-color: var(--background-modifier-border-hover);
+	border-color: var(--background-modifier-border-focus);
 }
 .wr-root .wr-chip.is-active {
 	border-color: var(--interactive-accent);
+	box-shadow: inset 0 0 0 1px var(--interactive-accent);
 	color: var(--text-accent);
 	background: var(--background-modifier-hover);
-	font-weight: 600;
+	font-weight: 700;
 }
 /* on/off 토글(🔬 분석)은 라디오형 칩과 구분되게 채움으로 강조 */
 .wr-root .wr-chip-toggle.is-active {
 	background: var(--interactive-accent);
 	color: var(--text-on-accent);
 	border-color: var(--interactive-accent);
+	box-shadow: none;
 }
-/* ── 결과 보기 카드: 관련도 슬라이더 + (결과 개수 | 분석) ── */
+/* ── 결과 보기 카드: 관련도 슬라이더 + (결과 개수 | 분석) — 테두리 있는 카드, 안쪽은 연한 선으로 2단 ── */
 .wr-filter {
 	display: grid;
-	gap: 6px;
+	gap: 0;
 	padding: 8px 10px;
-	margin: 0 0 8px;
+	margin: 0 0 10px;
+	border: 1px solid var(--background-modifier-border-hover);
 	border-radius: var(--radius-m, 8px);
 	background: var(--background-secondary);
 }
@@ -163,6 +181,8 @@ export const WR_STYLES = `
 	display: flex;
 	align-items: center;
 	gap: 6px;
+	padding-top: 8px;
+	border-top: 1px solid var(--background-modifier-border);
 }
 .wr-filter-view .wr-chip-toggle {
 	margin-left: auto;
@@ -171,7 +191,9 @@ export const WR_STYLES = `
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	margin: 0 0 8px;
+	margin: 0 0 10px;
+	padding: 0 0 8px;
+	border-bottom: 1px solid var(--background-modifier-border-hover);
 }
 .wr-status-row .wr-status {
 	flex: 1;
@@ -181,13 +203,15 @@ export const WR_STYLES = `
 	display: inline-flex;
 	align-items: center;
 	gap: 4px;
-	padding: 2px 6px;
+	padding: 2px 8px;
 	height: auto;
 	box-shadow: none;
-	border: 0;
-	background: transparent;
+	border: 1px solid var(--background-modifier-border-hover);
+	border-radius: 999px;
+	background: var(--background-primary);
 	color: var(--text-muted);
 	font-size: 11px;
+	font-weight: 600;
 	white-space: nowrap;
 	cursor: pointer;
 }
@@ -197,18 +221,20 @@ export const WR_STYLES = `
 }
 .wr-root .wr-btn-pause.is-paused {
 	color: var(--text-accent);
+	border-color: var(--interactive-accent);
 }
-/* 관련도 슬라이더 — 카드 안 한 줄. 색은 테마 변수만(라이트·다크 공통) */
+/* 관련도 슬라이더 — 카드 안 첫 줄. 색은 테마 변수만(라이트·다크 공통) */
 .wr-relevance {
 	display: flex;
 	align-items: center;
 	gap: 8px;
+	padding: 0 0 8px;
 	font-size: var(--font-ui-smaller);
 	color: var(--text-muted);
 }
 .wr-relevance-end {
 	font-size: 10px;
-	font-weight: 600;
+	font-weight: 700;
 	letter-spacing: 0.3px;
 	color: var(--text-muted);
 }
@@ -222,7 +248,7 @@ export const WR_STYLES = `
 	background: linear-gradient(to right, var(--color-red) 0%, var(--color-yellow) 100%);
 	border-radius: 3px;
 	outline: none;
-	opacity: 0.85;
+	opacity: 0.9;
 }
 .wr-relevance-slider::-webkit-slider-thumb {
 	-webkit-appearance: none;
@@ -230,21 +256,21 @@ export const WR_STYLES = `
 	height: 16px;
 	border-radius: 50%;
 	background: var(--background-primary);
-	border: 2px solid var(--text-muted);
+	border: 2px solid var(--text-normal);
 	cursor: pointer;
 	box-shadow: var(--shadow-s);
 	transition: transform 0.12s ease, border-color 0.12s ease;
 }
 .wr-relevance-slider::-webkit-slider-thumb:hover {
 	transform: scale(1.15);
-	border-color: var(--text-normal);
+	border-color: var(--interactive-accent);
 }
 .wr-relevance-slider::-moz-range-thumb {
 	width: 16px;
 	height: 16px;
 	border-radius: 50%;
 	background: var(--background-primary);
-	border: 2px solid var(--text-muted);
+	border: 2px solid var(--text-normal);
 	cursor: pointer;
 	box-shadow: var(--shadow-s);
 }
@@ -252,7 +278,7 @@ export const WR_STYLES = `
 	font-family: var(--font-monospace);
 	min-width: 24px;
 	text-align: center;
-	font-weight: 600;
+	font-weight: 700;
 	font-size: 11px;
 	padding: 2px 7px;
 	background: var(--interactive-accent);
