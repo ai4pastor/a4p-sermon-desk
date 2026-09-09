@@ -6,6 +6,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { KO_STOPWORDS } from "../../src/morpheme/stopwords";
+import { topUpProtected } from "../../src/morpheme/protected";
+
+// src/morpheme/index.ts의 setProtectedTerms에 대응 — 하니스가 data.json에서 도출해 주입.
+let protectedForTests: readonly string[] = [];
+export function setProtectedForTests(terms: readonly string[]): void {
+	protectedForTests = terms;
+}
 
 // src/morpheme/index.ts의 KEEP_POS와 동일해야 실제 검색과 같은 토큰이 나온다.
 const KEEP_POS = new Set(["NNG", "NNP", "VV", "VA", "SL", "SH", "SN"]);
@@ -75,9 +82,10 @@ async function tokenizeKorean(text: string): Promise<string[]> {
 	return out;
 }
 
-/** src/morpheme/index.ts의 tokenize와 동일 동작 (NFC 정규화 포함). */
+/** src/morpheme/index.ts의 tokenize와 동일 동작 (NFC 정규화·보호 단어 보충 포함). */
 export async function tokenizeReal(text: string): Promise<string[]> {
 	if (!text) return [];
 	const nfc = text.normalize("NFC");
-	return hasHangul(nfc) ? tokenizeKorean(nfc) : tokenizeNaive(nfc);
+	const base = hasHangul(nfc) ? await tokenizeKorean(nfc) : tokenizeNaive(nfc);
+	return topUpProtected(base, nfc, protectedForTests);
 }

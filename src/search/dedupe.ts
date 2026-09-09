@@ -11,9 +11,15 @@ export function canonicalTitle(t: string): string {
 
 export function dedupeHits(hits: HybridHit[]): HybridHit[] {
 	const byPath = new Map<string, HybridHit>();
+	const countByPath = new Map<string, number>();
 	for (const h of hits) {
+		countByPath.set(h.notePath, (countByPath.get(h.notePath) ?? 0) + 1);
 		const cur = byPath.get(h.notePath);
 		if (!cur || h.finalScore > cur.finalScore) byPath.set(h.notePath, h);
+	}
+	// 같은 노트의 다른 매칭 청크 수를 대표 히트에 실어 "+N 문단" 표시에 쓴다.
+	for (const [p, best] of byPath) {
+		byPath.set(p, { ...best, noteHitCount: countByPath.get(p) ?? 1 });
 	}
 	const byTitle = new Map<string, HybridHit>();
 	for (const h of byPath.values()) {

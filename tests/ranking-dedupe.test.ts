@@ -26,6 +26,22 @@ function hit(partial: Partial<HybridHit>): HybridHit {
 	};
 }
 
+describe("dedupeHits — noteHitCount", () => {
+	it("같은 노트의 매칭 청크 수를 대표 히트에 싣는다 (단일 노트는 1)", () => {
+		const out = dedupeHits([
+			hit({ chunkId: 1, notePath: "a.md", noteTitle: "a", finalScore: 0.5 }),
+			hit({ chunkId: 2, notePath: "a.md", noteTitle: "a", finalScore: 0.9 }),
+			hit({ chunkId: 3, notePath: "a.md", noteTitle: "a", finalScore: 0.1 }),
+			hit({ chunkId: 4, notePath: "b.md", noteTitle: "b", finalScore: 0.7 }),
+		]);
+		const a = out.find((h) => h.notePath === "a.md")!;
+		const b = out.find((h) => h.notePath === "b.md")!;
+		expect(a.chunkId).toBe(2);
+		expect(a.noteHitCount).toBe(3);
+		expect(b.noteHitCount).toBe(1);
+	});
+});
+
 describe("canonicalTitle", () => {
 	it("복사본/copy 접미어만 접는다", () => {
 		expect(canonicalTitle("설교 복사본")).toBe("설교");

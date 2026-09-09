@@ -34,6 +34,8 @@ export interface QueryKeys {
 	// 텍스트가 놓친 의미 유사 키(벡터 발견). RecallView가 채운다. 기본 빈 Set.
 	dVec: Set<string>;
 	tVec: Set<string>;
+	/** dVec/tVec 키의 쿼리 코사인 유사도(🔬 분석 표시용). 선택. */
+	vecSims?: Map<string, number>;
 }
 
 export async function buildSynonymTokenIndex(
@@ -299,10 +301,20 @@ export function tagSearch(
 	const matchCounts = new Map<string, number>();
 	// 추천 근거 키 — 카드 칩 표시용.
 	const keyMatches = new Map<string, MatchedKey[]>();
-	const addMatch = (path: string, key: string, kind: MatchedKey["kind"]) => {
+	const addMatch = (
+		path: string,
+		key: string,
+		kind: MatchedKey["kind"],
+		weight: number,
+	) => {
+		const sim = keys.vecSims?.get(key);
+		const entry: MatchedKey =
+			(kind === "dVec" || kind === "tVec") && sim !== undefined
+				? { key, kind, weight, sim }
+				: { key, kind, weight };
 		const list = keyMatches.get(path);
-		if (list) list.push({ key, kind });
-		else keyMatches.set(path, [{ key, kind }]);
+		if (list) list.push(entry);
+		else keyMatches.set(path, [entry]);
 	};
 	if (docRows[0]) {
 		for (const r of docRows[0].values) {
@@ -322,7 +334,7 @@ export function tagSearch(
 			} else continue;
 			scores.set(path, (scores.get(path) ?? 0) + w);
 			matchCounts.set(path, (matchCounts.get(path) ?? 0) + 1);
-			addMatch(path, key, kind);
+			addMatch(path, key, kind, w);
 		}
 	}
 	if (tagRows[0]) {
@@ -340,7 +352,7 @@ export function tagSearch(
 			} else continue;
 			scores.set(path, (scores.get(path) ?? 0) + w);
 			matchCounts.set(path, (matchCounts.get(path) ?? 0) + 1);
-			addMatch(path, key, kind);
+			addMatch(path, key, kind, w);
 		}
 	}
 
@@ -348,7 +360,7 @@ export function tagSearch(
 
 	const candidatePaths = [...scores.keys()];
 	const noteRows = db.exec(
-		`SELECT path, category_id, weight FROM notes WHERE path IN (${candidatePaths.map(() => "?").join(",")})`,
+		`SELECT path, category_id, weight, mtime FROM notes WHERE path IN (${candidatePaths.map(() => "?").join(",")})`,
 		candidatePaths,
 	);
 	if (!noteRows[0]) return [];
@@ -359,6 +371,8 @@ export function tagSearch(
 		weight: number;
 		rawScore: number;
 		finalScore: number;
+		matchCount: number;
+		mtime: number;
 	};
 	const excludeNorm = opts.excludePath
 		? normalizePath(opts.excludePath)
@@ -380,10 +394,19 @@ export function tagSearch(
 			weight,
 			rawScore,
 			finalScore: rawScore * weight,
+			matchCount: matchCounts.get(path) ?? 0,
+			mtime: Number(row[3] ?? 0),
 		});
 	}
 
-	candidates.sort((a, b) => b.finalScore - a.finalScore);
+	// 동점(예: 교리 정확 1키 × 가중치 10 = 4.50 다수)은 SQL 반환 순이라 임의였다.
+	// 2차: 매칭 키 수 많은 쪽, 3차: 최근 수정 노트.
+	candidates.sort(
+		(a, b) =>
+			b.finalScore - a.finalScore ||
+			b.matchCount - a.matchCount ||
+			b.mtime - a.mtime,
+	);
 	const top = candidates.slice(0, topN);
 	if (top.length === 0) return [];
 
@@ -401,16 +424,26 @@ export function tagSearch(
 			text: string;
 		}
 	>();
+	// 대표 청크 = 매칭 키가 본문에 나오는 첫 청크(미리보기에 근거가 보이게).
+	// 키가 프론트매터에만 있어 본문 어디에도 없으면 첫 청크(ord 최소)로 폴백.
+	const keyMatched = new Set<string>();
 	if (chunkRows[0]) {
 		for (const r of chunkRows[0].values) {
 			const path = String(r[1]);
-			if (firstChunks.has(path)) continue;
-			firstChunks.set(path, {
-				id: Number(r[0]),
-				ord: Number(r[2]),
-				heading: r[3] === null ? null : String(r[3]),
-				text: String(r[4]),
-			});
+			if (keyMatched.has(path)) continue;
+			const text = String(r[4]);
+			const lower = text.toLowerCase();
+			const keys = keyMatches.get(path) ?? [];
+			const hasKey = keys.some((k) => lower.includes(k.key.toLowerCase()));
+			if (!firstChunks.has(path) || hasKey) {
+				firstChunks.set(path, {
+					id: Number(r[0]),
+					ord: Number(r[2]),
+					heading: r[3] === null ? null : String(r[3]),
+					text,
+				});
+			}
+			if (hasKey) keyMatched.add(path);
 		}
 	}
 
@@ -439,6 +472,7 @@ export function tagSearch(
 			matchedQueryTerms: matchCounts.get(c.path) ?? 0,
 			queryTermsTotal: allKeys.size,
 			matchedKeys: keyMatches.get(c.path) ?? [],
+			rawScore: c.rawScore,
 		});
 	}
 	return hits;

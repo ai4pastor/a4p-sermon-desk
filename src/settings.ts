@@ -23,6 +23,17 @@ export const CHAT_TOP_K_MIN = 3;
 export const CHAT_TOP_K_MAX = 20;
 export const DEFAULT_CHAT_TOP_K = 15;
 
+/** 검색 결과 카드 개수(의미·태그 공통). 패널 '결과' 칩·설정 탭에서 선택. */
+export const RESULT_COUNTS = [10, 20, 50] as const;
+export type ResultCount = (typeof RESULT_COUNTS)[number];
+export const DEFAULT_RESULT_COUNT: ResultCount = 10;
+
+export function normalizeResultCount(v: unknown): ResultCount {
+	return (RESULT_COUNTS as readonly number[]).includes(v as number)
+		? (v as ResultCount)
+		: DEFAULT_RESULT_COUNT;
+}
+
 export function clampChatTopK(v: unknown): number {
 	const n = typeof v === "number" && Number.isFinite(v) ? Math.round(v) : DEFAULT_CHAT_TOP_K;
 	return Math.max(CHAT_TOP_K_MIN, Math.min(CHAT_TOP_K_MAX, n));
@@ -67,6 +78,12 @@ export interface WeightedRecallSettings {
 	/** true면 편집·선택 시 실시간 자동 검색. false(기본)면 우클릭 메뉴 등 수동 트리거만. */
 	autoSearch: boolean;
 	eagerRender: boolean;
+	/** 🔬 분석 — 결과 카드에 점수 구성(어휘·의미·가중치)과 "왜 이 결과?" 근거 표시. */
+	showAnalysis: boolean;
+	/** 검색 결과 카드 개수(10/20/50). 채팅 참고 자료 수(chatTopK)와는 별개. */
+	resultCount: ResultCount;
+	/** 형태소 보호 단어(직접 추가분). 교리 키워드·동의어는 자동 포함. */
+	protectedTerms: string[];
 	relevanceThreshold: number;
 	doctrineRaw: string;
 	doctrineKeywords: string[];
@@ -117,6 +134,9 @@ export const DEFAULT_SETTINGS: WeightedRecallSettings = {
 	chatTopK: DEFAULT_CHAT_TOP_K,
 	autoSearch: false,
 	eagerRender: false,
+	showAnalysis: false,
+	resultCount: DEFAULT_RESULT_COUNT,
+	protectedTerms: [],
 	relevanceThreshold: 10,
 	doctrineRaw: "",
 	doctrineKeywords: [],
@@ -219,6 +239,9 @@ export function migrateToFlat(data: unknown): WeightedRecallSettings | null {
 		chatTopK: clampChatTopK(d.chatTopK),
 		autoSearch: d.autoSearch === true,
 		eagerRender: typeof d.eagerRender === "boolean" ? d.eagerRender : false,
+		showAnalysis: false,
+		resultCount: DEFAULT_RESULT_COUNT,
+		protectedTerms: [],
 		relevanceThreshold: clampThreshold(d.relevanceThreshold),
 		doctrineRaw: typeof d.doctrineRaw === "string" ? d.doctrineRaw : "",
 		doctrineKeywords: filterStrings(d.doctrineKeywords),
@@ -263,6 +286,9 @@ export function migrateLegacySettings(
 		chatTopK: DEFAULT_CHAT_TOP_K,
 		autoSearch: false,
 		eagerRender: false,
+		showAnalysis: false,
+		resultCount: DEFAULT_RESULT_COUNT,
+		protectedTerms: [],
 		relevanceThreshold: 10,
 		doctrineRaw: "",
 		doctrineKeywords: [],
@@ -380,6 +406,9 @@ export function normalizeSettings(
 			typeof settings.eagerRender === "boolean"
 				? settings.eagerRender
 				: false,
+		showAnalysis: settings.showAnalysis === true,
+		resultCount: normalizeResultCount(settings.resultCount),
+		protectedTerms: filterStrings(settings.protectedTerms),
 		relevanceThreshold: clampThreshold(settings.relevanceThreshold),
 		doctrineRaw:
 			typeof settings.doctrineRaw === "string"

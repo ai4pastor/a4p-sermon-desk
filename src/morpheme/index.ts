@@ -1,6 +1,7 @@
 import wasmInit, { GaruWasm } from "garu-ko/pkg/garu_wasm.js";
 import { splitSentences } from "garu-ko";
 import { KO_STOPWORDS } from "./stopwords";
+import { topUpProtected } from "./protected";
 // @ts-expect-error binary loader (esbuild) returns Uint8Array; package ships a real d.ts that masks our *.wasm declaration
 import wasmBytes from "../../node_modules/garu-ko/pkg/garu_wasm_bg.wasm";
 import baseModelBytes from "../../node_modules/garu-ko/models/base.gmdl";
@@ -70,11 +71,26 @@ export function tokenizeNaive(text: string): string[] {
 		.filter((s) => s.length >= 2 && !KO_STOPWORDS.has(s));
 }
 
+// 보호 단어(교리 키워드·동의어·직접 추가) — main.ts가 설정 로드/저장 시 주입한다.
+let protectedTerms: readonly string[] = [];
+
+export function setProtectedTerms(terms: readonly string[]): void {
+	protectedTerms = terms;
+}
+
+export function getProtectedTerms(): readonly string[] {
+	return protectedTerms;
+}
+
 export async function tokenize(text: string): Promise<string[]> {
 	if (!text) return [];
 	// NFD(iCloud 등 외부 동기화) 텍스트가 섞여도 색인·쿼리 토큰이 일치하도록 통일.
 	const nfc = text.normalize("NFC");
-	return hasHangul(nfc) ? tokenizeKorean(nfc) : tokenizeNaive(nfc);
+	const base = hasHangul(nfc)
+		? await tokenizeKorean(nfc)
+		: tokenizeNaive(nfc);
+	// garu가 쪼개거나 떨어뜨린 보호 단어를 보충(색인·쿼리 공통 → 토큰 일치).
+	return topUpProtected(base, nfc, protectedTerms);
 }
 
 export function isStopword(token: string): boolean {

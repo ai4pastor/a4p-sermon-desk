@@ -8,6 +8,7 @@ import {
 	FOLDERS_FP_KEY,
 	ALGO_VERSION_KEY,
 	DOCTRINE_FP_KEY,
+	PROTECTED_FP_KEY,
 } from "../db/meta";
 import { parseFile } from "./parser";
 import { chunkBody } from "./chunker";
@@ -58,6 +59,8 @@ export interface IndexOptions {
 	onProgress?: (done: number, total: number) => void;
 	/** true면 변경 감지 없이 전체 재색인(임베딩도 전량 재생성됨). */
 	force?: boolean;
+	/** 현재 보호 단어 지문 — 전체 재색인이면 모든 청크가 새 규칙으로 토큰화되므로 기록. */
+	protectedFp?: string;
 }
 
 /** 한 노트의 색인 흔적을 자식→부모 순으로 제거 (FK OFF 세션에서도 안전). */
@@ -298,6 +301,9 @@ export async function runIndex(
 		// COMMIT과 함께 원자적으로 기록 — 중단 시 다음 실행이 다시 판정한다.
 		setMeta(db, ALGO_VERSION_KEY, String(INDEX_ALGO_VERSION));
 		setMeta(db, DOCTRINE_FP_KEY, doctrineFp);
+		if (full && options.protectedFp !== undefined) {
+			setMeta(db, PROTECTED_FP_KEY, options.protectedFp);
+		}
 		db.exec("COMMIT");
 		if (full) {
 			setMeta(db, FOLDERS_FP_KEY, foldersFingerprint(settings));
@@ -336,4 +342,51 @@ export async function runIndex(
 		insertNoteDoctrine.free();
 		insertNoteTag.free();
 	}
+}
+
+/**
+ * 형태소 색인(chunk_terms)만 다시 계산 — 보호 단어 변경 반영용.
+ * chunks·embeddings는 그대로 두므로 API 비용 0. bm25 통계 캐시는
+ * chunk_terms COUNT 지문 변화로 자동 무효화된다.
+ */
+export async function retokenizeAllChunks(
+	db: Database,
+	protectedFp: string,
+	onProgress?: (done: number, total: number) => void,
+): Promise<{ chunks: number; terms: number }> {
+	const rows = db.exec("SELECT id, heading, text FROM chunks")[0]?.values ?? [];
+	const total = rows.length;
+	let terms = 0;
+	db.exec("BEGIN TRANSACTION");
+	const del = db.prepare("DELETE FROM chunk_terms WHERE chunk_id = ?");
+	const ins = db.prepare(
+		"INSERT INTO chunk_terms(chunk_id, term) VALUES (?, ?)",
+	);
+	try {
+		for (let i = 0; i < rows.length; i++) {
+			const [idRaw, headingRaw, textRaw] = rows[i];
+			const id = Number(idRaw);
+			const heading = headingRaw === null ? null : String(headingRaw);
+			const text = String(textRaw ?? "");
+			del.run([id]);
+			// runIndex와 동일한 입력(heading + 본문)으로 토큰화해야 색인이 일치한다.
+			const toks = await tokenize(heading ? `${heading}\n${text}` : text);
+			for (const t of toks) ins.run([id, t]);
+			terms += toks.length;
+			if (i % 50 === 49) {
+				onProgress?.(i + 1, total);
+				await new Promise((r) => setTimeout(r, 0));
+			}
+		}
+		setMeta(db, PROTECTED_FP_KEY, protectedFp);
+		db.exec("COMMIT");
+	} catch (e) {
+		db.exec("ROLLBACK");
+		throw e;
+	} finally {
+		del.free();
+		ins.free();
+	}
+	onProgress?.(total, total);
+	return { chunks: total, terms };
 }

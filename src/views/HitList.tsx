@@ -1,7 +1,13 @@
-import { render } from "preact";
+import { render, type ComponentChildren } from "preact";
 import { useEffect, useRef } from "preact/hooks";
 import { App, Component, MarkdownRenderer } from "obsidian";
 import type { HybridHit } from "../search/hybrid";
+import { VECTOR_NOISE_THRESHOLD, VECTOR_STRONG_SIM } from "../search/hybrid";
+import {
+	explainHit,
+	KIND_LABEL_KO,
+	type HitExplanation,
+} from "../search/explain";
 import { type GroupId, type InsertMode, internalToWeight10 } from "../settings";
 import { INSERT_LABEL } from "../insert";
 import { isStopword } from "../morpheme";
@@ -14,6 +20,10 @@ export interface HitListProps {
 	queryTerms: string[];
 	activeTab: GroupId;
 	eagerRender: boolean;
+	/** 🔬 분석 — 카드에 점수 막대·"왜 이 결과?" 표시. */
+	showAnalysis: boolean;
+	/** 현재 결과 1위 finalScore(상대 막대 기준). 핀 카드는 초과 가능 → clamp. */
+	topScore: number;
 	pinRatio: number;
 	app: App;
 	component: Component;
@@ -69,6 +79,8 @@ function HitList(props: HitListProps) {
 			isPinned={isPinned}
 			eagerRender={props.eagerRender}
 			insertMode={props.insertMode}
+			showAnalysis={props.showAnalysis}
+			topScore={props.topScore}
 			onToggle={() => props.onToggleExpand(h.chunkId)}
 			onTogglePin={() => props.onTogglePin(h.chunkId, h)}
 			onInsertLink={(alt) => props.onInsertLink(h, alt)}
@@ -205,6 +217,8 @@ function HitCard(props: {
 	isPinned: boolean;
 	eagerRender: boolean;
 	insertMode: InsertMode;
+	showAnalysis: boolean;
+	topScore: number;
 	onToggle: () => void;
 	onTogglePin: () => void;
 	onInsertLink: (altKey: boolean) => void;
@@ -223,6 +237,8 @@ function HitCard(props: {
 		isPinned,
 		eagerRender,
 		insertMode,
+		showAnalysis,
+		topScore,
 		onToggle,
 		onTogglePin,
 		onInsertLink,
@@ -242,6 +258,7 @@ function HitCard(props: {
 	const folder = folderOf(hit.notePath);
 	const snippet = makeSnippet(hit.fullText, hit.preview, queryTerms);
 	const chips = (hit.matchedKeys ?? []).slice(0, MAX_KEY_CHIPS);
+	const ex = showAnalysis ? explainHit(hit, topScore) : null;
 
 	return (
 		<div
@@ -265,6 +282,14 @@ function HitCard(props: {
 				) : null}
 				{hit.heading ? (
 					<div class="wr-heading">{hit.heading}</div>
+				) : null}
+				{(hit.noteHitCount ?? 1) > 1 ? (
+					<span
+						class="wr-sibling-chip"
+						title={`이 노트에서 관련 문단 ${(hit.noteHitCount ?? 1) - 1}개 더 매칭 — 가장 높은 문단만 표시`}
+					>
+						+{(hit.noteHitCount ?? 1) - 1} 문단
+					</span>
 				) : null}
 				<div
 					class={`wr-preview${expanded ? " wr-hidden" : ""}`}
@@ -298,6 +323,8 @@ function HitCard(props: {
 						hidden={!expanded}
 					/>
 				) : null}
+				{ex ? <ScoreBar ex={ex} /> : null}
+				{ex ? <WhyPanel ex={ex} hit={hit} /> : null}
 				<div class="wr-meta">
 					<span class="wr-category">
 						<span class="wr-weight">
@@ -355,6 +382,260 @@ function HitCard(props: {
 				) : null}
 			</div>
 		</div>
+	);
+}
+
+// ── 🔬 분석: 점수 막대 + "왜 이 결과?" ─────────────────────────────
+
+function fmt(n: number | null | undefined, digits: number): string {
+	return n === null || n === undefined || !Number.isFinite(n)
+		? "–"
+		: n.toFixed(digits);
+}
+
+/**
+ * 상대 관련도 막대. 길이 = 1위 대비 finalScore, 세그먼트 = 더해지는 성분의 비율
+ * (의미 검색: 어휘 BM25 ⇄ 의미 벡터, 태그 검색: 교리 ⇄ 태그). 곱해지는 인자는 칩.
+ */
+export function ScoreBar({ ex }: { ex: HitExplanation }) {
+	const pct = Math.round(ex.relative * 100);
+	const isTag = ex.mode === "tag";
+	const p = isTag ? "교리" : "어휘";
+	const s = isTag ? "태그" : "의미";
+	const w1 = ex.relative * ex.primaryShare * 100;
+	const w2 = ex.relative * ex.secondaryShare * 100;
+	const m = ex.multipliers;
+	return (
+		<div class="wr-score" onClick={(e) => e.stopPropagation()}>
+			<div class="wr-score-row">
+				<div
+					class="wr-score-track"
+					title={`1위 대비 ${pct}% — ${p} ${Math.round(ex.primaryShare * 100)}% · ${s} ${Math.round(ex.secondaryShare * 100)}%`}
+				>
+					<span class="wr-score-seg wr-score-seg-lex" style={{ width: `${w1}%` }} />
+					<span class="wr-score-seg wr-score-seg-sem" style={{ width: `${w2}%` }} />
+				</div>
+				<span class="wr-score-pct">{pct}%</span>
+			</div>
+			<div class="wr-score-mults">
+				<span class="wr-score-legend">
+					<i class="wr-score-dot wr-score-seg-lex" />
+					{p}
+				</span>
+				<span class="wr-score-legend">
+					<i class="wr-score-dot wr-score-seg-sem" />
+					{s}
+				</span>
+				<span class="wr-score-mult" title="폴더(테마) 가중치 배율">
+					×{fmt(m.weight, 2)} 가중치
+				</span>
+				{m.heading !== 1 ? (
+					<span class="wr-score-mult" title="헤딩(소제목)에 검색어가 있어 1.2배">
+						×{fmt(m.heading, 1)} 제목
+					</span>
+				) : null}
+				{ex.coverageApplied ? (
+					<span
+						class="wr-score-mult"
+						title="검색어 포함률 보너스 = 1 + (일치/전체) × 0.5 (검색어 2개 이상일 때)"
+					>
+						×{fmt(m.coverage, 2)} 포함률
+					</span>
+				) : null}
+				{m.cosine !== 1 ? (
+					<span
+						class="wr-score-mult"
+						title={`의미 유사도 보너스 = 1 + (유사도−${VECTOR_NOISE_THRESHOLD})/(${VECTOR_STRONG_SIM}−${VECTOR_NOISE_THRESHOLD}) × 0.5`}
+					>
+						×{fmt(m.cosine, 2)} 의미
+					</span>
+				) : null}
+			</div>
+		</div>
+	);
+}
+
+function WhyRow(props: { label: string; children: ComponentChildren }) {
+	return (
+		<div class="wr-why-row">
+			<span class="wr-why-label">{props.label}</span>
+			<span class="wr-why-value">{props.children}</span>
+		</div>
+	);
+}
+
+/** 카드 펼침과 독립적인 <details> — 클릭이 카드 토글로 올라가지 않게 막는다. */
+function WhyPanel({ ex, hit }: { ex: HitExplanation; hit: HybridHit }) {
+	const pct = Math.round(ex.relative * 100);
+	const w10 = internalToWeight10(hit.noteWeight);
+	return (
+		<details class="wr-why" onClick={(e) => e.stopPropagation()}>
+			<summary>🔬 왜 이 결과?</summary>
+			<div class="wr-why-body">
+				{ex.mode === "hybrid" && ex.hybrid ? (
+					<WhyHybrid ex={ex} hit={hit} pct={pct} w10={w10} />
+				) : ex.tag ? (
+					<WhyTag ex={ex} hit={hit} pct={pct} w10={w10} />
+				) : null}
+			</div>
+		</details>
+	);
+}
+
+function WhyHybrid(props: {
+	ex: HitExplanation;
+	hit: HybridHit;
+	pct: number;
+	w10: number;
+}) {
+	const { ex, hit, pct, w10 } = props;
+	const h = ex.hybrid!;
+	const m = ex.multipliers;
+	const missing = h.total - h.effectiveTerms;
+	const noQuery = h.total === 0;
+	let pass: string;
+	if (!h.hasTrace) pass = "정보 없음";
+	else if (noQuery) pass = "검색어 없음 — 의미 검색만 적용";
+	else if (h.passedBy === "terms")
+		pass = `검색어 ${h.matched}개 일치 (최소 ${h.requiredTerms}개)`;
+	else if (h.passedBy === "vector")
+		pass = `검색어 ${h.matched}/${h.requiredTerms}개로 부족하지만 의미 유사도 ${fmt(h.vectorScore, 2)} ≥ ${VECTOR_NOISE_THRESHOLD} 로 통과`;
+	else if (h.passedBy === "both")
+		pass = `검색어 ${h.matched}개 일치 + 의미 유사도 ${fmt(h.vectorScore, 2)} ≥ ${VECTOR_NOISE_THRESHOLD}`;
+	else pass = "필터 미통과";
+	const rrfB = h.hasTrace ? hit.trace!.rrfBm25 : 0;
+	const rrfV = h.hasTrace ? hit.trace!.rrfVector : 0;
+	return (
+		<>
+			<WhyRow label="일치한 검색어">
+				{noQuery ? (
+					<span class="wr-why-muted">없음 (의미 검색만)</span>
+				) : (
+					<>
+						{h.matchedTerms.length > 0 ? (
+							<span class="wr-why-terms">
+								{h.matchedTerms.map((t) => (
+									<span class="wr-why-term" key={t}>
+										{t}
+									</span>
+								))}
+							</span>
+						) : (
+							<span class="wr-why-muted">없음</span>
+						)}{" "}
+						<span class="wr-why-muted">
+							{h.matched}/{h.total}
+							{missing > 0 ? ` · 색인에 없는 단어 ${missing}개 제외` : ""}
+						</span>
+					</>
+				)}
+			</WhyRow>
+			<WhyRow label="어휘 검색 (BM25)">
+				{h.bm25Rank !== null ? (
+					<>
+						후보 {h.bm25Rank}위 · 점수 {fmt(h.bm25Score, 2)}
+						{h.hasTrace ? ` → RRF ${fmt(rrfB, 4)}` : ""}
+					</>
+				) : (
+					<span class="wr-why-muted">해당 없음 (단어로는 못 찾음)</span>
+				)}
+			</WhyRow>
+			<WhyRow label="의미 검색 (벡터)">
+				{h.vectorRank !== null ? (
+					<>
+						후보 {h.vectorRank}위 · 유사도 {fmt(h.vectorScore, 3)}
+						{h.hasTrace ? ` → RRF ${fmt(rrfV, 4)}` : ""}
+						{h.cosineMeter !== null ? (
+							<span
+								class="wr-why-meter"
+								title={`유사도 ${fmt(h.vectorScore, 3)} — 잡음 문턱 ${VECTOR_NOISE_THRESHOLD} ~ 강한 일치 ${VECTOR_STRONG_SIM} 구간`}
+							>
+								<span style={{ width: `${Math.round(h.cosineMeter * 100)}%` }} />
+							</span>
+						) : null}
+					</>
+				) : (
+					<span class="wr-why-muted">해당 없음 (의미로는 못 찾음)</span>
+				)}
+			</WhyRow>
+			{h.hasTrace ? (
+				<WhyRow label="합산 (RRF)">
+					{fmt(rrfB, 4)} + {fmt(rrfV, 4)} = {fmt(ex.base, 4)}
+				</WhyRow>
+			) : (
+				<WhyRow label="합산 (RRF)">{fmt(ex.base, 4)}</WhyRow>
+			)}
+			<WhyRow label="배율">
+				× 가중치 {fmt(m.weight, 2)} ({w10}/10) · × 제목{" "}
+				{m.heading !== 1 ? `${fmt(m.heading, 1)} (일치)` : "1.0 (없음)"} · ×
+				포함률{" "}
+				{ex.coverageApplied
+					? fmt(m.coverage, 2)
+					: `1.0 (검색어 ${h.total}개 — 2개 이상일 때만)`}{" "}
+				· × 의미 유사도{" "}
+				{h.vectorScore !== null ? fmt(m.cosine, 2) : "1.0 (벡터 없음)"}
+			</WhyRow>
+			<WhyRow label="최종 점수">
+				{fmt(hit.finalScore, 5)}{" "}
+				<span class="wr-why-muted">(1위 대비 {pct}%)</span>
+			</WhyRow>
+			<WhyRow label="잡음 필터">{pass}</WhyRow>
+		</>
+	);
+}
+
+function WhyTag(props: {
+	ex: HitExplanation;
+	hit: HybridHit;
+	pct: number;
+	w10: number;
+}) {
+	const { ex, hit, pct, w10 } = props;
+	const t = ex.tag!;
+	const sum = t.keys.map((k) => fmt(k.weight, k.weight % 1 ? 1 : 0)).join(" + ");
+	return (
+		<>
+			<div class="wr-why-note">
+				태그·교리 매칭 — 의미 검색과 다른 점수 체계입니다
+			</div>
+			<WhyRow label="근거 키">
+				{t.keys.length === 0 ? (
+					<span class="wr-why-muted">없음</span>
+				) : (
+					<span
+						class="wr-why-keys"
+						title="가중치: 교리 정확 3 / 교리 동의어 2 / 교리 의미 유사 1 / 태그 정확 1 / 태그 의미 유사 0.5"
+					>
+						{t.keys.map((k) => (
+							<span class="wr-why-key" key={`${k.kind}:${k.key}`}>
+								<b>{k.key}</b> · {KIND_LABEL_KO[k.kind]}
+								{k.sim !== undefined ? ` · 유사도 ${fmt(k.sim, 2)}` : ""} ·{" "}
+								<span class="wr-why-w">+{k.weight}</span>
+							</span>
+						))}
+					</span>
+				)}
+			</WhyRow>
+			<WhyRow label="합산">
+				{t.keys.length > 1 ? `${sum} = ` : ""}
+				{fmt(t.rawScore, 1)}
+				<span class="wr-why-muted">
+					{" "}
+					(교리 {fmt(t.doctrineSum, 1)} · 태그 {fmt(t.tagSum, 1)})
+				</span>
+			</WhyRow>
+			<WhyRow label="배율">
+				× 가중치 {fmt(ex.multipliers.weight, 2)} ({w10}/10)
+			</WhyRow>
+			<WhyRow label="최종 점수">
+				{fmt(hit.finalScore, 3)}{" "}
+				<span class="wr-why-muted">(1위 대비 {pct}%)</span>
+			</WhyRow>
+			<div class="wr-why-note">
+				미리보기는 매칭 키가 나오는 문단입니다 (없으면 첫 문단 — 태그·교리는
+				프론트매터에만 있을 수 있음)
+			</div>
+		</>
 	);
 }
 
@@ -427,7 +708,7 @@ const SNIPPET_LEN = 160;
  * 없으면(예: 태그 검색에서 키가 프론트매터에만 있는 경우) 기존 preview
  * (본문 앞부분)로 폴백. 하이라이트가 보이지 않는 무의미한 스니펫 방지.
  */
-function makeSnippet(
+export function makeSnippet(
 	fullText: string,
 	preview: string,
 	terms: string[],
@@ -450,7 +731,7 @@ function makeSnippet(
 	);
 }
 
-function highlightText(text: string, terms: string[]) {
+export function highlightText(text: string, terms: string[]) {
 	const filtered = terms.filter((t) => t.length >= 2 && !isStopword(t));
 	if (filtered.length === 0) return text;
 	const escaped = filtered

@@ -123,6 +123,43 @@ describe("tagSearch — 가중합", () => {
 			m.close();
 		}
 	});
+
+	it("matchedKeys[].weight 사다리(3/2/1/1/0.5)와 rawScore = Σweight, vecSims → sim 전파", async () => {
+		const m = await makeMiniDb();
+		try {
+			m.addNote("n.md");
+			m.addChunk("n.md", { text: "본문" });
+			for (const k of ["칭의", "구원", "성화"]) m.addDoctrine("n.md", k);
+			for (const k of ["감사", "거룩한삶"]) m.addTag("n.md", k);
+			const hits = tagSearch(
+				m.db,
+				keysOf({
+					dExact: new Set(["칭의"]),
+					dSyn: new Set(["구원"]),
+					dVec: new Set(["성화"]),
+					tExact: new Set(["감사"]),
+					tVec: new Set(["거룩한삶"]),
+					vecSims: new Map([
+						["성화", 0.548],
+						["거룩한삶", 0.77],
+					]),
+				}),
+				appStub,
+			);
+			const keys = hits[0].matchedKeys ?? [];
+			const w = Object.fromEntries(keys.map((k) => [k.key, k.weight]));
+			expect(w).toEqual({ 칭의: 3, 구원: 2, 성화: 1, 감사: 1, 거룩한삶: 0.5 });
+			expect(hits[0].rawScore).toBeCloseTo(7.5, 9);
+			expect(hits[0].finalScore).toBeCloseTo(7.5 * 1.0, 9);
+			const sim = Object.fromEntries(keys.map((k) => [k.key, k.sim]));
+			expect(sim["성화"]).toBe(0.548);
+			expect(sim["거룩한삶"]).toBe(0.77);
+			expect(sim["칭의"]).toBeUndefined();
+			expect(sim["감사"]).toBeUndefined();
+		} finally {
+			m.close();
+		}
+	});
 });
 
 describe("tagSearch — 가중치·제외", () => {
@@ -194,12 +231,32 @@ describe("tagSearch — 가중치·제외", () => {
 });
 
 describe("tagSearch — 대표 청크", () => {
-	it("노트의 첫 청크(ord 최소)가 미리보기 대표가 된다 (현행 스펙 고정)", async () => {
+	it("매칭 키가 본문에 나오는 첫 청크가 대표가 된다", async () => {
+		const m = await makeMiniDb();
+		try {
+			m.addNote("n.md");
+			m.addChunk("n.md", { text: "첫 번째 청크" });
+			const second = m.addChunk("n.md", { text: "두 번째 청크 — 칭의가 여기" });
+			m.addChunk("n.md", { text: "세 번째 청크 — 칭의 또 등장" });
+			m.addDoctrine("n.md", "칭의");
+			const hits = tagSearch(
+				m.db,
+				keysOf({ dExact: new Set(["칭의"]) }),
+				appStub,
+			);
+			expect(hits[0].chunkId).toBe(second);
+			expect(hits[0].preview).toContain("칭의");
+		} finally {
+			m.close();
+		}
+	});
+
+	it("키가 본문 어디에도 없으면 첫 청크(ord 최소)로 폴백", async () => {
 		const m = await makeMiniDb();
 		try {
 			m.addNote("n.md");
 			const first = m.addChunk("n.md", { text: "첫 번째 청크" });
-			m.addChunk("n.md", { text: "두 번째 청크 — 매칭 근거는 여기" });
+			m.addChunk("n.md", { text: "두 번째 청크" });
 			m.addDoctrine("n.md", "칭의");
 			const hits = tagSearch(
 				m.db,
@@ -207,7 +264,29 @@ describe("tagSearch — 대표 청크", () => {
 				appStub,
 			);
 			expect(hits[0].chunkId).toBe(first);
-			expect(hits[0].preview).toContain("첫 번째");
+		} finally {
+			m.close();
+		}
+	});
+
+	it("동점이면 매칭 키 수 → 최근 수정(mtime) 순으로 정렬된다", async () => {
+		const m = await makeMiniDb();
+		try {
+			// 세 노트 모두 dExact 1키(3점) 동점, old/new는 키 수도 같음
+			for (const p of ["old.md", "new.md", "two.md"]) {
+				m.addNote(p);
+				m.addChunk(p, { text: `${p} 본문` });
+				m.addDoctrine(p, "칭의");
+			}
+			m.addTag("two.md", "감사"); // two: 3 + 1 = 4점 → 1위
+			m.db.run("UPDATE notes SET mtime = 100 WHERE path = 'old.md'");
+			m.db.run("UPDATE notes SET mtime = 200 WHERE path = 'new.md'");
+			const hits = tagSearch(
+				m.db,
+				keysOf({ dExact: new Set(["칭의"]), tExact: new Set(["감사"]) }),
+				appStub,
+			);
+			expect(hits.map((h) => h.notePath)).toEqual(["two.md", "new.md", "old.md"]);
 		} finally {
 			m.close();
 		}

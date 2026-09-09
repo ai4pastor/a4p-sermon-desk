@@ -10,9 +10,19 @@ import {
 	type Debouncer,
 } from "obsidian";
 import type { Database } from "sql.js";
-import type { GroupId, InsertMode, WeightedRecallSettings } from "../settings";
-import { getActiveProfile, makeWeightResolver } from "../settings";
+import type {
+	GroupId,
+	InsertMode,
+	ResultCount,
+	WeightedRecallSettings,
+} from "../settings";
+import {
+	RESULT_COUNTS,
+	getActiveProfile,
+	makeWeightResolver,
+} from "../settings";
 import { buildCallout, calloutAlias, effectiveInsertMode } from "../insert";
+import { paragraphAround } from "../paragraph";
 import { preloadMorpheme, tokenize } from "../morpheme";
 import { hybridSearch, HybridHit } from "../search/hybrid";
 import { dedupeHits } from "../search/dedupe";
@@ -25,7 +35,7 @@ import {
 	VEC_THRESHOLD_TAG,
 	VEC_TOPK,
 } from "../search/tag";
-import { topVectorKeys } from "../search/vector";
+import { topVectorKeyHits } from "../search/vector";
 import {
 	loadAllKeyEmbeddings,
 	getKeyEmbeddingFingerprint,
@@ -54,7 +64,6 @@ declare const __DEV__: boolean;
 export const RECALL_VIEW_TYPE = "a4p-sermon-desk-view";
 
 const DEBOUNCE_MS = 2500;
-const TOP_N = 10;
 export const MIN_PARAGRAPH_CHARS = 10;
 const SELECTION_POLL_MS = 250;
 
@@ -71,10 +80,31 @@ interface QueryContext {
 
 type RenderMode = QueryContext["mode"] | "tag";
 
+/** 🔬 분석 요약 헤더용 — 이 검색이 어떻게 해석·실행됐는지. */
+interface QuerySummary {
+	text: string;
+	tokens: string[];
+	embeddingUsed: boolean;
+	/** BM25·벡터 각각의 후보 수(의미 모드). 태그 모드는 0. */
+	candidateK: number;
+	rawCount: number;
+	shownCount: number;
+	/** 태그 모드 — 추출된 키(종류별)와 벡터 발견 키 유사도. */
+	keys?: {
+		dExact: string[];
+		dSyn: string[];
+		dVec: string[];
+		tExact: string[];
+		tVec: string[];
+		sims: Map<string, number>;
+	};
+}
+
 interface RenderState {
 	hits: HybridHit[];
 	queryTerms: string[];
 	mode: RenderMode;
+	summary?: QuerySummary;
 }
 
 interface CachedQuery {
@@ -102,6 +132,9 @@ export class RecallView extends ItemView {
 	private modeChatEl: HTMLButtonElement | null = null;
 	private profileRowEl: HTMLElement | null = null;
 	private insertRowEl: HTMLElement | null = null;
+	private countRowEl: HTMLElement | null = null;
+	/** 🔬 분석 켬일 때 결과 위에 뜨는 쿼리 요약 한 줄. */
+	private summaryEl: HTMLElement | null = null;
 	/** 검색 ⇄ 채팅 화면 전환 (세션 전용 — 재시작 시 검색으로 시작). */
 	private viewMode: "search" | "chat" = "search";
 	private chatMountEl: HTMLElement | null = null;
@@ -206,6 +239,11 @@ export class RecallView extends ItemView {
 		this.insertRowEl = insertRow;
 		this.updateInsertModeUI();
 
+		// 결과 개수 칩(10/20/50) — 검색 결과 전용.
+		const countRow = root.createDiv({ cls: "wr-profile-row" });
+		this.countRowEl = countRow;
+		this.updateResultCountUI();
+
 		const relevanceRow = root.createDiv({ cls: "wr-relevance" });
 		relevanceRow.createSpan({
 			text: "관련도",
@@ -241,11 +279,23 @@ export class RecallView extends ItemView {
 			text: "활성 노트를 분석합니다…",
 			cls: "wr-status",
 		});
+		// 요약은 wrap(검색 UI 토글) 안의 inner(분석 토글)로 — 두 숨김 조건이 서로 덮어쓰지 않게.
+		const summaryWrap = root.createDiv({ cls: "wr-query-summary-wrap" });
+		this.summaryEl = summaryWrap.createDiv({
+			cls: "wr-query-summary wr-hidden",
+		});
 		this.mountEl = root.createDiv({ cls: "wr-mount" });
 		this.chatMountEl = root.createDiv({
 			cls: "wr-chat-mount wr-hidden",
 		});
-		this.searchUiEls = [insertRow, relevanceRow, this.statusEl, this.mountEl];
+		this.searchUiEls = [
+			insertRow,
+			countRow,
+			relevanceRow,
+			this.statusEl,
+			summaryWrap,
+			this.mountEl,
+		];
 
 		this.registerEvent(
 			this.app.workspace.on("active-leaf-change", () => {
@@ -336,12 +386,16 @@ export class RecallView extends ItemView {
 		void this.refresh({ manual: true });
 	}
 
-	/** 우클릭 메뉴 등 외부 트리거용 — 캡처된 선택 텍스트로 즉시 검색. */
-	searchWithText(text: string, file: TFile): void {
-		this.lastQueryCtx = { text, mode: "selection", filePath: file.path };
+	/** 우클릭 메뉴·명령 등 외부 트리거용 — 캡처된 선택 텍스트(또는 커서 문단)로 즉시 검색. */
+	searchWithText(
+		text: string,
+		file: TFile,
+		mode: "selection" | "paragraph" = "selection",
+	): void {
+		this.lastQueryCtx = { text, mode, filePath: file.path };
 		void this.refresh({
 			manual: true,
-			query: { text, mode: "selection" },
+			query: { text, mode },
 			file,
 		});
 	}
@@ -401,7 +455,23 @@ export class RecallView extends ItemView {
 				void this.setInsertMode(mode);
 			});
 		}
-		// 카드 버튼 라벨(링크 삽입 ⇄ 콜아웃 삽입) 갱신 — 렌더 상태가 없으면 no-op.
+		// 🔬 분석 칩 — 같은 행 오른쪽 끝. 검색 결과 전용이라 이 행(searchUiEls)에 둔다.
+		const analysisOn = this.host.settings.showAnalysis;
+		const analysisBtn = row.createEl("button", {
+			text: "🔬 분석",
+			cls: "wr-profile-chip wr-chip-analysis",
+		});
+		analysisBtn.toggleClass("is-active", analysisOn);
+		analysisBtn.setAttr(
+			"title",
+			analysisOn
+				? "점수 구성(어휘·의미·가중치)과 '왜 이 결과?' 근거를 카드에 표시 중 — 클릭해 숨김"
+				: "각 결과가 왜 나왔는지 — 점수 구성 막대와 '왜 이 결과?' 근거를 카드에 표시",
+		);
+		analysisBtn.addEventListener("click", () => {
+			void this.setShowAnalysis(!analysisOn);
+		});
+		// 카드 버튼 라벨(링크 삽입 ⇄ 콜아웃 삽입)·분석 표시 갱신 — 렌더 상태가 없으면 no-op.
 		this.doRender();
 	}
 
@@ -410,6 +480,50 @@ export class RecallView extends ItemView {
 		this.host.settings.insertMode = mode;
 		await this.host.saveSettings();
 		this.updateInsertModeUI();
+	}
+
+	private async setShowAnalysis(on: boolean): Promise<void> {
+		if (this.host.settings.showAnalysis === on) return;
+		this.host.settings.showAnalysis = on;
+		await this.host.saveSettings();
+		this.updateInsertModeUI();
+	}
+
+	/** 결과 개수 칩 재구성 — 칩 클릭·설정 탭 변경 시 호출 (refreshRecallViewsUI 포함). */
+	updateResultCountUI(): void {
+		const row = this.countRowEl;
+		if (!row) return;
+		row.empty();
+		const current = this.host.settings.resultCount;
+		row.createSpan({ text: "결과", cls: "wr-profile-label" });
+		for (const n of RESULT_COUNTS) {
+			const btn = row.createEl("button", {
+				text: `${n}개`,
+				cls: "wr-profile-chip",
+			});
+			btn.toggleClass("is-active", n === current);
+			btn.setAttr(
+				"title",
+				`검색 결과를 최대 ${n}개까지 표시 (내 메모·외부 자료 합산) — 바꾸면 같은 문단으로 즉시 재검색`,
+			);
+			btn.addEventListener("click", () => {
+				void this.setResultCount(n);
+			});
+		}
+	}
+
+	private async setResultCount(n: ResultCount): Promise<void> {
+		if (this.host.settings.resultCount === n) return;
+		this.host.settings.resultCount = n;
+		await this.host.saveSettings();
+		this.updateResultCountUI();
+		// 결과는 검색 시점에 잘려 있으므로 재검색(캐시 히트 → API 0).
+		this.rerunLastSearch();
+	}
+
+	/** 현재 설정의 결과 개수. 후보(topN·candidateK)는 dedupe 손실을 감안해 3배로 뽑는다. */
+	private get topN(): number {
+		return this.host.settings.resultCount;
 	}
 
 	private async setActiveProfile(id: string): Promise<void> {
@@ -421,12 +535,12 @@ export class RecallView extends ItemView {
 	}
 
 	/**
-	 * 마지막 검색을 같은 쿼리로 재실행 (테마 전환 반영용).
+	 * 마지막 검색을 같은 쿼리로 재실행 (테마 전환·결과 개수 변경 반영용).
 	 * refresh()를 그대로 부르면 사이드바 포커스 상태에서 getActiveFile()이 null이라
 	 * 결과가 지워질 수 있어, lastQueryCtx의 파일·텍스트를 명시 전달한다.
 	 * 쿼리 토큰·임베딩은 LRU 캐시 히트 → 추가 API 호출 0.
 	 */
-	private rerunLastSearch(): void {
+	rerunLastSearch(): void {
 		const ctx = this.lastQueryCtx;
 		if (ctx) {
 			const file = this.app.vault.getAbstractFileByPath(ctx.filePath);
@@ -440,7 +554,7 @@ export class RecallView extends ItemView {
 			}
 		}
 		if (this.getCurrentRender()) {
-			this.setStatus("테마 변경됨 — 다음 검색부터 적용됩니다.");
+			this.setStatus("설정 변경됨 — 다음 검색부터 적용됩니다.");
 		}
 	}
 
@@ -567,6 +681,7 @@ export class RecallView extends ItemView {
 
 	private clearList(): void {
 		if (this.mountEl) unmountHitList(this.mountEl);
+		this.summaryEl?.addClass("wr-hidden");
 	}
 
 	private extractSelection(): string | null {
@@ -580,14 +695,10 @@ export class RecallView extends ItemView {
 		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
 		if (!view) return null;
 		const editor = view.editor;
-		const cursor = editor.getCursor();
-		const doc = editor.getValue();
-		const lines = doc.split("\n");
-		let start = cursor.line;
-		let end = cursor.line;
-		while (start > 0 && lines[start - 1].trim() !== "") start--;
-		while (end < lines.length - 1 && lines[end + 1].trim() !== "") end++;
-		const paragraph = lines.slice(start, end + 1).join("\n").trim();
+		const paragraph = paragraphAround(
+			editor.getValue().split("\n"),
+			editor.getCursor().line,
+		);
 		return paragraph.length >= MIN_PARAGRAPH_CHARS ? paragraph : null;
 	}
 
@@ -724,20 +835,67 @@ export class RecallView extends ItemView {
 		const queryTerms = cached.tokens;
 		const queryEmbedding = cached.embedding;
 		const t0 = performance.now();
+		const topN = this.topN;
 		const rawHits = hybridSearch(db, queryTerms, queryEmbedding, {
-			topN: TOP_N * 3,
+			topN: topN * 3,
+			// 후보 목록(BM25·벡터 각각)도 같이 늘려야 50개 요청 시 후보가 모자라지 않는다.
+			// 10개면 30 = 기존 기본값과 동일.
+			candidateK: topN * 3,
 			resolveWeight,
 		});
 		const ms = performance.now() - t0;
 		const filtered = rawHits.filter((h) => h.notePath !== file.path);
-		const deduped = dedupeHits(filtered).slice(0, TOP_N);
+		const deduped = dedupeHits(filtered).slice(0, topN);
 		if (gen !== this.refreshGen) return;
 		if (__DEV__) {
 			console.log(
 				`[a4p-sermon-desk][view] mode=${ctx.mode} query="${file.basename}" qchars=${ctx.text.length} terms=${queryTerms.length} vector=${queryEmbedding ? "yes" : "no"} → ${deduped.length} hits in ${ms.toFixed(1)}ms (raw=${rawHits.length})`,
 			);
 		}
-		this.renderHits({ hits: deduped, queryTerms, mode: ctx.mode });
+		this.renderHits({
+			hits: deduped,
+			queryTerms,
+			mode: ctx.mode,
+			summary: {
+				text: ctx.text,
+				tokens: queryTerms,
+				embeddingUsed: queryEmbedding !== null,
+				candidateK: topN * 3,
+				rawCount: rawHits.length,
+				shownCount: deduped.length,
+			},
+		});
+	}
+
+	private tagSummary(
+		ctx: QueryContext,
+		keys: {
+			dExact: Set<string>;
+			dSyn: Set<string>;
+			dVec: Set<string>;
+			tExact: Set<string>;
+			tVec: Set<string>;
+			vecSims?: Map<string, number>;
+		},
+		rawCount: number,
+		shownCount: number,
+	): QuerySummary {
+		return {
+			text: ctx.text,
+			tokens: [],
+			embeddingUsed: (keys.vecSims?.size ?? 0) > 0,
+			candidateK: 0,
+			rawCount,
+			shownCount,
+			keys: {
+				dExact: [...keys.dExact],
+				dSyn: [...keys.dSyn],
+				dVec: [...keys.dVec],
+				tExact: [...keys.tExact],
+				tVec: [...keys.tVec],
+				sims: keys.vecSims ?? new Map(),
+			},
+		};
 	}
 
 	private async runTagSearch(
@@ -778,7 +936,8 @@ export class RecallView extends ItemView {
 				};
 			}
 			const dExclude = new Set([...keys.dExact, ...keys.dSyn]);
-			for (const k of topVectorKeys(
+			keys.vecSims = new Map();
+			for (const k of topVectorKeyHits(
 				queryEmbedding,
 				this.keyEmbeddings.doctrine,
 				lexicons.doctrine,
@@ -786,9 +945,10 @@ export class RecallView extends ItemView {
 				VEC_THRESHOLD_DOCTRINE,
 				VEC_TOPK,
 			)) {
-				keys.dVec.add(k);
+				keys.dVec.add(k.key);
+				keys.vecSims.set(k.key, k.sim);
 			}
-			for (const k of topVectorKeys(
+			for (const k of topVectorKeyHits(
 				queryEmbedding,
 				this.keyEmbeddings.tag,
 				lexicons.tag,
@@ -796,7 +956,8 @@ export class RecallView extends ItemView {
 				VEC_THRESHOLD_TAG,
 				VEC_TOPK,
 			)) {
-				keys.tVec.add(k);
+				keys.tVec.add(k.key);
+				keys.vecSims.set(k.key, k.sim);
 			}
 		}
 
@@ -812,17 +973,19 @@ export class RecallView extends ItemView {
 				hits: [],
 				queryTerms: [],
 				mode: "tag",
+				summary: this.tagSummary(ctx, keys, 0, 0),
 			};
 			if (this.host.settings.searchMode === "tag") this.doRender();
 			return;
 		}
 		const t0 = performance.now();
+		const topN = this.topN;
 		const rawHits = tagSearch(db, keys, this.app, {
-			topN: TOP_N * 3,
+			topN: topN * 3,
 			excludePath: file.path,
 			resolveWeight,
 		});
-		const hits = dedupeHits(rawHits).slice(0, TOP_N);
+		const hits = dedupeHits(rawHits).slice(0, topN);
 		const ms = performance.now() - t0;
 		if (gen !== this.refreshGen) return;
 		if (__DEV__) {
@@ -834,6 +997,7 @@ export class RecallView extends ItemView {
 			hits,
 			queryTerms: [...allKeys],
 			mode: "tag",
+			summary: this.tagSummary(ctx, keys, rawHits.length, hits.length),
 		});
 	}
 
@@ -897,6 +1061,8 @@ export class RecallView extends ItemView {
 				activeTab: this.activeTab,
 				eagerRender: this.host.settings.eagerRender,
 				insertMode: this.host.settings.insertMode,
+				showAnalysis: this.host.settings.showAnalysis,
+				topScore,
 				pinRatio: this.pinRatio,
 				app: this.app,
 				component: this,
@@ -927,6 +1093,7 @@ export class RecallView extends ItemView {
 					).open(),
 			});
 		}
+		this.renderQuerySummary(state);
 		const label = this.modeLabel(state.mode);
 		const pinCount = this.pinnedHits.length;
 		const total = internalHits.length + externalHits.length + pinCount;
@@ -943,6 +1110,80 @@ export class RecallView extends ItemView {
 				`${label} 기준 ${parts.join(" / ")}${suffix}`,
 			);
 		}
+	}
+
+	/** 🔬 분석 켬일 때 결과 위 요약 한 줄 — 문단이 어떻게 토큰·키로 해석돼 몇 개 후보에서 골라졌는지. */
+	private renderQuerySummary(state: RenderState): void {
+		const el = this.summaryEl;
+		if (!el) return;
+		const s = state.summary;
+		if (!this.host.settings.showAnalysis || !s) {
+			el.addClass("wr-hidden");
+			return;
+		}
+		el.removeClass("wr-hidden");
+		el.empty();
+		const short =
+			s.text.length > 60 ? `${s.text.slice(0, 60).trim()}…` : s.text;
+		const chips = (
+			parent: HTMLElement,
+			items: string[],
+			sims?: Map<string, number>,
+		) => {
+			if (items.length === 0) {
+				parent.createSpan({ text: "없음", cls: "wr-qs-muted" });
+				return;
+			}
+			for (const it of items) {
+				const sim = sims?.get(it);
+				parent.createSpan({
+					text: sim !== undefined ? `${it} ${sim.toFixed(2)}` : it,
+					cls: "wr-why-term",
+				});
+			}
+		};
+		const row1 = el.createDiv({ cls: "wr-qs-row" });
+		row1.createSpan({ text: "검색어", cls: "wr-qs-label" });
+		row1.createSpan({ text: `“${short}”`, cls: "wr-qs-text", title: s.text });
+
+		if (s.keys) {
+			const k = s.keys;
+			const groups: [string, string[]][] = [
+				["교리 정확", k.dExact],
+				["교리 동의어", k.dSyn],
+				["교리 의미 유사", k.dVec],
+				["태그 정확", k.tExact],
+				["태그 의미 유사", k.tVec],
+			];
+			for (const [label, items] of groups) {
+				if (items.length === 0) continue;
+				const row = el.createDiv({ cls: "wr-qs-row" });
+				row.createSpan({ text: label, cls: "wr-qs-label" });
+				chips(row, items, k.sims);
+			}
+			const total =
+				k.dExact.length + k.dSyn.length + k.dVec.length + k.tExact.length + k.tVec.length;
+			const row = el.createDiv({ cls: "wr-qs-row" });
+			row.createSpan({ text: "실행", cls: "wr-qs-label" });
+			row.createSpan({
+				text:
+					total === 0
+						? "추출된 키 없음 → 태그 검색 결과 없음"
+						: `키 ${total}개로 노트 매칭 → 후보 ${s.rawCount} → 결과 ${s.shownCount} (노트당 1개, 매칭 문단 미리보기)`,
+				cls: "wr-qs-text",
+			});
+			return;
+		}
+
+		const row2 = el.createDiv({ cls: "wr-qs-row" });
+		row2.createSpan({ text: `토큰 ${s.tokens.length}개`, cls: "wr-qs-label" });
+		chips(row2, s.tokens);
+		const row3 = el.createDiv({ cls: "wr-qs-row" });
+		row3.createSpan({ text: "실행", cls: "wr-qs-label" });
+		row3.createSpan({
+			text: `임베딩 ${s.embeddingUsed ? "✓ 사용" : "✗ 없음(BM25만)"} · 후보 어휘 ${s.candidateK} + 의미 ${s.embeddingUsed ? s.candidateK : 0} → 융합·필터 ${s.rawCount} → 노트당 1개 ${s.shownCount}`,
+			cls: "wr-qs-text",
+		});
 	}
 
 	private togglePin(chunkId: number, hit: HybridHit): void {
@@ -1060,6 +1301,9 @@ export class RecallView extends ItemView {
 			},
 			onOpenSource: (h) => void this.openHit(h),
 			onOpenSourcePopup: openSourcePopup,
+			showAnalysis: this.host.settings.showAnalysis,
+			insertMode: this.host.settings.insertMode,
+			onInsertSource: (h, alt) => this.insertLink(h, alt),
 		});
 	}
 

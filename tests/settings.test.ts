@@ -230,6 +230,76 @@ describe("normalizeSettings", () => {
 			normalizeSettings(settingsWith({ insertMode: "callout" })).insertMode,
 		).toBe("callout");
 	});
+
+	it("showAnalysis — 기본 false, 누락/비불리언은 false, true만 유지 (마이그레이션 포함)", () => {
+		expect(DEFAULT_SETTINGS.showAnalysis).toBe(false);
+		expect(
+			normalizeSettings(settingsWith({ showAnalysis: undefined as never }))
+				.showAnalysis,
+		).toBe(false);
+		expect(
+			normalizeSettings(settingsWith({ showAnalysis: "yes" as never }))
+				.showAnalysis,
+		).toBe(false);
+		expect(
+			normalizeSettings(settingsWith({ showAnalysis: true })).showAnalysis,
+		).toBe(true);
+		const flat = migrateToFlat({
+			settingsVersion: 1,
+			categories: [],
+			folders: [],
+		});
+		expect(flat?.showAnalysis).toBe(false);
+		const legacy = migrateLegacySettings({ folderWeights: [] });
+		expect(legacy?.showAnalysis).toBe(false);
+	});
+
+	it("resultCount — 기본 10, 10/20/50만 허용, 그 외·누락은 10 (마이그레이션 포함)", () => {
+		expect(DEFAULT_SETTINGS.resultCount).toBe(10);
+		expect(
+			normalizeSettings(settingsWith({ resultCount: 20 })).resultCount,
+		).toBe(20);
+		expect(
+			normalizeSettings(settingsWith({ resultCount: 50 })).resultCount,
+		).toBe(50);
+		expect(
+			normalizeSettings(settingsWith({ resultCount: 30 as never })).resultCount,
+		).toBe(10);
+		expect(
+			normalizeSettings(settingsWith({ resultCount: "20" as never }))
+				.resultCount,
+		).toBe(10);
+		expect(
+			normalizeSettings(settingsWith({ resultCount: undefined as never }))
+				.resultCount,
+		).toBe(10);
+		const flat = migrateToFlat({
+			settingsVersion: 1,
+			categories: [],
+			folders: [],
+		});
+		expect(flat?.resultCount).toBe(10);
+		const legacy = migrateLegacySettings({ folderWeights: [] });
+		expect(legacy?.resultCount).toBe(10);
+	});
+
+	it("protectedTerms — 기본 [], 문자열 배열만 유지, 마이그레이션은 []", () => {
+		expect(DEFAULT_SETTINGS.protectedTerms).toEqual([]);
+		expect(
+			normalizeSettings(settingsWith({ protectedTerms: ["거룩", 3 as never] }))
+				.protectedTerms,
+		).toEqual(["거룩"]);
+		expect(
+			normalizeSettings(settingsWith({ protectedTerms: undefined as never }))
+				.protectedTerms,
+		).toEqual([]);
+		const flat = migrateToFlat({
+			settingsVersion: 1,
+			categories: [],
+			folders: [],
+		});
+		expect(flat?.protectedTerms).toEqual([]);
+	});
 });
 
 describe("테마 프로파일 — v2→v3 백필", () => {

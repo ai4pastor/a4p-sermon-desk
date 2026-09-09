@@ -114,8 +114,28 @@ function topVectorSims(
 }
 
 /**
- * 텍스트 매칭이 놓친 의미 유사 키를 발견: 코사인 ≥ threshold 인 키를 topK개.
+ * 텍스트 매칭이 놓친 의미 유사 키를 발견: 코사인 ≥ threshold 인 키를 topK개,
+ * 유사도 값과 함께(🔬 분석 표시용).
  */
+export function topVectorKeyHits(
+	queryVec: Float32Array,
+	keyEmb: Map<string, Float32Array>,
+	allow: Set<string>,
+	exclude: Set<string>,
+	threshold: number,
+	topK: number,
+): { key: string; sim: number }[] {
+	const sims = topVectorSims(queryVec, keyEmb, allow, exclude);
+	const out: { key: string; sim: number }[] = [];
+	for (const s of sims) {
+		if (s.sim < threshold) break;
+		out.push(s);
+		if (out.length >= topK) break;
+	}
+	return out;
+}
+
+/** topVectorKeyHits의 키만 — 기존 호출부·실측 하니스 호환. */
 export function topVectorKeys(
 	queryVec: Float32Array,
 	keyEmb: Map<string, Float32Array>,
@@ -124,14 +144,14 @@ export function topVectorKeys(
 	threshold: number,
 	topK: number,
 ): string[] {
-	const sims = topVectorSims(queryVec, keyEmb, allow, exclude);
-	const out: string[] = [];
-	for (const s of sims) {
-		if (s.sim < threshold) break;
-		out.push(s.key);
-		if (out.length >= topK) break;
-	}
-	return out;
+	return topVectorKeyHits(
+		queryVec,
+		keyEmb,
+		allow,
+		exclude,
+		threshold,
+		topK,
+	).map((s) => s.key);
 }
 
 function norm(v: Float32Array): number {

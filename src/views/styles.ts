@@ -549,6 +549,236 @@ export const WR_STYLES = `
 	color: var(--text-faint);
 	letter-spacing: 0.02em;
 }
+/* ── 🔬 분석: 점수 막대 ── */
+.wr-score {
+	margin: 5px 0 2px;
+	font-size: 10px;
+	color: var(--text-faint);
+	cursor: default;
+}
+.wr-score-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+.wr-score-track {
+	flex: 1;
+	display: flex;
+	height: 6px;
+	border-radius: 3px;
+	background: var(--background-modifier-border);
+	overflow: hidden;
+}
+.wr-score-seg {
+	display: block;
+	height: 100%;
+	transition: width 0.25s ease;
+}
+.wr-score-seg-lex {
+	background: var(--interactive-accent);
+}
+.wr-score-seg-sem {
+	background: var(--color-cyan, #5fb3b3);
+}
+.wr-score-pct {
+	min-width: 3.2ch;
+	text-align: right;
+	font-family: var(--font-monospace);
+	color: var(--text-muted);
+}
+.wr-score-mults {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 3px 6px;
+	margin-top: 3px;
+}
+.wr-score-legend {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+}
+.wr-score-dot {
+	display: inline-block;
+	width: 7px;
+	height: 7px;
+	border-radius: 2px;
+}
+.wr-score-mult {
+	font-family: var(--font-monospace);
+	padding: 0 4px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	line-height: 1.5;
+	color: var(--text-muted);
+}
+/* ── 🔬 분석: 왜 이 결과? ── */
+.wr-why {
+	margin: 2px 0 0;
+	font-size: 11px;
+	color: var(--text-muted);
+	cursor: default;
+}
+.wr-why > summary {
+	cursor: pointer;
+	list-style: none;
+	color: var(--text-accent);
+	font-size: 11px;
+	user-select: none;
+}
+.wr-why > summary::-webkit-details-marker {
+	display: none;
+}
+.wr-why > summary::before {
+	content: "▸ ";
+	color: var(--text-faint);
+}
+.wr-why[open] > summary::before {
+	content: "▾ ";
+}
+.wr-why-body {
+	margin: 4px 0 2px;
+	padding: 6px 8px;
+	border-left: 2px solid var(--background-modifier-border);
+	display: grid;
+	gap: 4px;
+}
+.wr-why-row {
+	display: grid;
+	grid-template-columns: 7.5em 1fr;
+	gap: 0 8px;
+	align-items: baseline;
+}
+.wr-why-label {
+	color: var(--text-faint);
+	white-space: nowrap;
+}
+.wr-why-value {
+	color: var(--text-normal);
+	word-break: keep-all;
+	overflow-wrap: anywhere;
+}
+.wr-why-muted {
+	color: var(--text-faint);
+}
+.wr-why-note {
+	color: var(--text-faint);
+	font-style: italic;
+}
+.wr-why-terms {
+	display: inline-flex;
+	flex-wrap: wrap;
+	gap: 3px;
+	vertical-align: middle;
+}
+.wr-why-term {
+	display: inline-flex;
+	padding: 0 6px;
+	border-radius: 8px;
+	font-size: 10px;
+	line-height: 1.6;
+	background: var(--background-modifier-hover);
+	color: var(--interactive-accent);
+	border: 1px solid var(--interactive-accent);
+}
+.wr-why-meter {
+	display: inline-block;
+	width: 64px;
+	height: 4px;
+	margin-left: 6px;
+	vertical-align: middle;
+	border-radius: 2px;
+	background: var(--background-modifier-border);
+	overflow: hidden;
+}
+.wr-why-meter > span {
+	display: block;
+	height: 100%;
+	background: var(--color-cyan, #5fb3b3);
+}
+.wr-why-keys {
+	display: grid;
+	gap: 2px;
+}
+.wr-why-key b {
+	font-weight: 600;
+	color: var(--text-normal);
+}
+.wr-why-w {
+	font-family: var(--font-monospace);
+	color: var(--text-accent);
+}
+.wr-chip-analysis {
+	margin-left: auto;
+}
+/* ── 🔬 분석: 쿼리 요약 헤더 ── */
+.wr-query-summary {
+	margin: 0 0 6px;
+	padding: 6px 8px;
+	border-radius: 6px;
+	background: var(--background-secondary);
+	font-size: 11px;
+	color: var(--text-muted);
+	display: grid;
+	gap: 3px;
+}
+.wr-qs-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 3px 6px;
+}
+.wr-qs-label {
+	color: var(--text-faint);
+	white-space: nowrap;
+	min-width: 4.5em;
+}
+.wr-qs-text {
+	color: var(--text-normal);
+	word-break: keep-all;
+	overflow-wrap: anywhere;
+}
+.wr-qs-muted {
+	color: var(--text-faint);
+}
+/* ── 채팅 출처 카드 보강 ── */
+.wr-chat-source-snippet {
+	margin-top: 2px;
+	font-size: 11px;
+	line-height: 1.45;
+	color: var(--text-muted);
+	word-break: keep-all;
+	overflow-wrap: anywhere;
+}
+.wr-chat-source-actions {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	align-self: flex-start;
+}
+.wr-chat-source-insert {
+	background: transparent;
+	border: none;
+	box-shadow: none;
+	padding: 0 4px;
+	cursor: pointer;
+	color: var(--text-faint);
+	font-size: 12px;
+}
+.wr-chat-source-insert:hover {
+	color: var(--text-accent);
+}
+.wr-sibling-chip {
+	display: inline-flex;
+	align-items: center;
+	margin: 2px 0 0;
+	padding: 0 6px;
+	border-radius: 8px;
+	font-size: 10px;
+	line-height: 1.6;
+	color: var(--text-muted);
+	background: var(--background-modifier-border);
+}
 .wr-empty {
 	margin: 24px 0;
 	padding: 24px 12px;

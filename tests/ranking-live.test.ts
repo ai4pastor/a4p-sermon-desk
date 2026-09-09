@@ -36,7 +36,12 @@ vi.mock("../src/morpheme", async () => {
 import initSqlJs from "sql.js";
 import type { Database } from "sql.js";
 import type { App } from "obsidian";
-import { hybridSearch, type HybridHit } from "../src/search/hybrid";
+import {
+	hybridSearch,
+	VECTOR_NOISE_THRESHOLD,
+	cosineMeter,
+	type HybridHit,
+} from "../src/search/hybrid";
 import {
 	tagSearch,
 	loadSearchLexicons,
@@ -48,10 +53,11 @@ import {
 	type QueryKeys,
 	type SearchLexicons,
 } from "../src/search/tag";
-import { topVectorKeys } from "../src/search/vector";
+import { topVectorKeys, vectorSearch } from "../src/search/vector";
 import { loadAllKeyEmbeddings } from "../src/db/embeddings";
 import { EMBEDDING_MODEL, embedTexts } from "../src/embedder/openai";
-import { tokenizeReal } from "./helpers/garu-node";
+import { setProtectedForTests, tokenizeReal } from "./helpers/garu-node";
+import { deriveProtectedTerms } from "../src/morpheme/protected";
 
 const LIVE_DB = process.env.A4P_LIVE_DB ?? "";
 const API_KEY = process.env.A4P_SMOKE_OPENAI_KEY ?? "";
@@ -86,7 +92,11 @@ function relClose(a: number, b: number, tol = 1e-6): boolean {
 function expectedFinal(h: HybridHit, w: number): number {
 	const coverage =
 		h.queryTermsTotal > 0 ? h.matchedQueryTerms / h.queryTermsTotal : 0;
-	return h.rrfScore * w * (h.headingMatched ? 1.2 : 1) * (1 + coverage * 0.5);
+	const cov = h.queryTermsTotal >= 2 ? 1 + coverage * 0.5 : 1;
+	const cosM = h.vectorScore === null ? 0 : cosineMeter(h.vectorScore);
+	return (
+		h.rrfScore * w * (h.headingMatched ? 1.2 : 1) * cov * (1 + cosM * 0.5)
+	);
 }
 
 function baseName(p: string): string {
@@ -137,14 +147,25 @@ describe.skipIf(!LIVE_DB)("실측 하니스 (실제 index.db 사본)", () => {
 		db = new SQL.Database(bytes);
 		lexicons = loadSearchLexicons(db);
 
+		let protectedCount = 0;
 		if (DATA_JSON) {
-			// doctrineSynonyms 필드만 사용. 다른 내용(API 키 등)은 읽지도 출력하지도 않는다.
+			// doctrine 관련 필드만 사용. 다른 내용(API 키 등)은 읽지도 출력하지도 않는다.
 			const raw = JSON.parse(fs.readFileSync(DATA_JSON, "utf8")) as {
 				doctrineSynonyms?: Record<string, string[]>;
+				doctrineKeywords?: string[];
+				protectedTerms?: string[];
 			};
 			synonymIndex = await buildSynonymTokenIndex(
 				raw.doctrineSynonyms ?? {},
 			);
+			// 0.8.0 보호 단어 — 실제 앱과 같은 도출 규칙으로 쿼리 토큰에 적용.
+			const prot = deriveProtectedTerms({
+				doctrineKeywords: raw.doctrineKeywords ?? [],
+				doctrineSynonyms: raw.doctrineSynonyms ?? {},
+				protectedTerms: raw.protectedTerms ?? [],
+			});
+			setProtectedForTests(prot);
+			protectedCount = prot.length;
 		}
 
 		for (const q of QUERIES) {
@@ -185,7 +206,7 @@ describe.skipIf(!LIVE_DB)("실측 하니스 (실제 index.db 사본)", () => {
 			"SELECT (SELECT COUNT(*) FROM notes), (SELECT COUNT(*) FROM chunks), (SELECT COUNT(*) FROM embeddings)",
 		)[0].values[0];
 		report.push(
-			`[env] notes=${counts[0]} chunks=${counts[1]} embeddings=${counts[2]} | 임베딩 사용: ${embByQuery.size}/${QUERIES.length}쿼리 | 동의어 인덱스: ${synonymIndex.size}키`,
+			`[env] notes=${counts[0]} chunks=${counts[1]} embeddings=${counts[2]} | 임베딩 사용: ${embByQuery.size}/${QUERIES.length}쿼리 | 동의어 인덱스: ${synonymIndex.size}키 | 보호 단어: ${protectedCount}개`,
 		);
 	}, 300_000);
 
@@ -206,6 +227,13 @@ describe.skipIf(!LIVE_DB)("실측 하니스 (실제 index.db 사본)", () => {
 					relClose(h.finalScore, expectedFinal(h, h.noteWeight)),
 					`${q.id} ${h.notePath} f=${h.finalScore} 기대=${expectedFinal(h, h.noteWeight)}`,
 				).toBe(true);
+				// 🔬 분석 trace — 실데이터에서도 RRF 분해 합이 rrfScore와 일치
+				expect(h.trace, `${q.id} ${h.notePath} trace 누락`).toBeDefined();
+				expect(
+					relClose(h.trace!.rrfBm25 + h.trace!.rrfVector, h.rrfScore),
+					`${q.id} ${h.notePath} rrf 분해 불일치`,
+				).toBe(true);
+				expect(h.trace!.matchedTerms.length).toBe(h.matchedQueryTerms);
 				checked++;
 			}
 		}
@@ -408,6 +436,7 @@ describe.skipIf(!LIVE_DB)("실측 하니스 (실제 index.db 사본)", () => {
 		let fullMiss = 0;
 		let tagMiss = 0;
 		let tagTotal = 0;
+		const abTotal = { off: 0, on: 0 };
 		for (const q of QUERIES) {
 			const t0 = performance.now();
 			const hy = runHybrid(q.id, 10);
@@ -448,8 +477,39 @@ describe.skipIf(!LIVE_DB)("실측 하니스 (실제 index.db 사본)", () => {
 
 			const flag = (h: HybridHit) =>
 				`${h.bm25Rank ? `B${h.bm25Rank}` : ""}${h.vectorRank ? `V${h.vectorRank}` : ""}${h.headingMatched ? "H" : ""} ${h.matchedQueryTerms}/${h.queryTermsTotal}`;
+			// 벡터 후보 유사도 분포 — 잡음 문턱(0.6)을 넘는 후보가 실제로 있는지
+			const emb = embByQuery.get(q.id);
+			const vh = emb ? vectorSearch(db, emb, EMBEDDING_MODEL, 30) : [];
+			const sims = vh.map((v) => v.similarity).sort((a, b) => b - a);
+			const over = (t: number) => sims.filter((x) => x >= t).length;
+			const vecLine =
+				sims.length === 0
+					? "벡터 후보 없음"
+					: `벡터 후보 30: 최고 ${sims[0].toFixed(3)} · 중위 ${sims[Math.floor(sims.length / 2)].toFixed(3)} · 최저 ${sims[sims.length - 1].toFixed(3)} · ≥0.40:${over(0.4)} ≥0.43:${over(0.43)} ≥0.45:${over(0.45)} ≥0.48:${over(0.48)} ≥0.50:${over(0.5)} ≥${VECTOR_NOISE_THRESHOLD}:${over(VECTOR_NOISE_THRESHOLD)}`;
+			// 코사인 보너스 A/B — 의미 전용 히트가 top10에 올라오는지(0.8.0 §3 조치 효과)
+			const hyOff = hybridSearch(
+				db,
+				tokensByQuery.get(q.id) ?? [],
+				embByQuery.get(q.id) ?? null,
+				{ topN: 10, applyCosineBoost: false },
+			);
+			const semOnlyOff = hyOff.filter((h) => !h.bm25Rank).length;
+			const semOnlyOn = hy.filter((h) => !h.bm25Rank).length;
+			abTotal.off += semOnlyOff;
+			abTotal.on += semOnlyOn;
+			// 🔬 분석 진단: top10의 소스(어휘만/의미만/양쪽)·잡음 필터 통과 사유 분포
+			const src = { b: 0, v: 0, bv: 0 };
+			const pass = { terms: 0, vector: 0, both: 0, none: 0 };
+			for (const h of hy) {
+				if (h.bm25Rank && h.vectorRank) src.bv++;
+				else if (h.bm25Rank) src.b++;
+				else src.v++;
+				pass[h.trace?.passedBy ?? "none"]++;
+			}
 			report.push(
 				`[쿼리:${q.id}] "${q.text}" terms=[${terms.join(",")}] → 의미 ${hy.length}건(${hyMs.toFixed(0)}ms)/태그 ${tg.length}건(${tgMs.toFixed(0)}ms)`,
+				`    소스: 어휘만 ${src.b} · 의미만 ${src.v} · 양쪽 ${src.bv} | 통과: 검색어 ${pass.terms} · 의미 ${pass.vector} · 둘다 ${pass.both}`,
+				`    ${vecLine}`,
 				...hy
 					.slice(0, 3)
 					.map(
@@ -464,6 +524,11 @@ describe.skipIf(!LIVE_DB)("실측 하니스 (실제 index.db 사본)", () => {
 					),
 			);
 		}
+		// 조치 후 의미 전용 히트가 줄어들지는 않아야 한다(soft 회귀 가드).
+		expect(abTotal.on).toBeGreaterThanOrEqual(abTotal.off);
+		report.push(
+			`[의미 전용 A/B] 코사인 보너스 off=${abTotal.off}/${QUERIES.length * 10} → on=${abTotal.on}/${QUERIES.length * 10} (top10 합산)`,
+		);
 		report.push(
 			`[메트릭] 의미 top5 스니펫 검색어 미노출: 고정 앞부분 ${snippetMiss}/${snippetTotal} → 매칭 부근 스니펫 적용 시 ${fullMiss}/${snippetTotal} | 태그 top5 미리보기 매칭 키 미노출: ${tagMiss}/${tagTotal} (칩이 근거 표시로 보완)`,
 		);

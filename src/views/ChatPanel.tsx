@@ -3,6 +3,10 @@ import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { App, Component, MarkdownRenderer, Notice } from "obsidian";
 import type { HybridHit } from "../search/hybrid";
 import { parseCiteNumbers, type ChatMessage } from "../chat/rag";
+import { explainHit } from "../search/explain";
+import { ScoreBar, highlightText, makeSnippet } from "./HitList";
+import { INSERT_LABEL } from "../insert";
+import type { InsertMode } from "../settings";
 
 export interface ChatPanelProps {
 	messages: ChatMessage[];
@@ -20,6 +24,11 @@ export interface ChatPanelProps {
 	onExpandAnswer: (message: ChatMessage) => void;
 	onOpenSource: (hit: HybridHit) => void;
 	onOpenSourcePopup: (hit: HybridHit) => void;
+	/** 🔬 분석 — 출처 카드에 점수 막대 표시. */
+	showAnalysis: boolean;
+	insertMode: InsertMode;
+	/** 출처 문단을 현재 노트에 삽입(검색 카드와 같은 링크/콜아웃 경로). */
+	onInsertSource: (hit: HybridHit, altKey: boolean) => void;
 }
 
 const EXAMPLE_QUESTIONS = [
@@ -183,6 +192,9 @@ function ChatPanel(props: ChatPanelProps) {
 									onExpandAnswer={props.onExpandAnswer}
 									onOpenSource={props.onOpenSource}
 									onOpenSourcePopup={props.onOpenSourcePopup}
+									showAnalysis={props.showAnalysis}
+									insertMode={props.insertMode}
+									onInsertSource={props.onInsertSource}
 								/>
 							) : null}
 						</div>
@@ -211,10 +223,15 @@ function AnswerBlock(props: {
 	onExpandAnswer: (message: ChatMessage) => void;
 	onOpenSource: (hit: HybridHit) => void;
 	onOpenSourcePopup: (hit: HybridHit) => void;
+	showAnalysis: boolean;
+	insertMode: InsertMode;
+	onInsertSource: (hit: HybridHit, altKey: boolean) => void;
 }) {
 	const { message } = props;
 	const sources = message.sources ?? [];
 	const [sourcesOpen, setSourcesOpen] = useState(false);
+	const noteCount = new Set(sources.map((h) => h.notePath)).size;
+	const topScore = sources.reduce((m, h) => Math.max(m, h.finalScore), 0);
 
 	const copyAnswer = () => {
 		void navigator.clipboard.writeText(message.content).then(() => {
@@ -243,7 +260,7 @@ function AnswerBlock(props: {
 						<span class="wr-chat-sources-chevron">
 							{sourcesOpen ? "▾" : "▸"}
 						</span>
-						참고한 노트 {sources.length}개
+						참고한 문단 {sources.length}개 · 노트 {noteCount}개
 					</button>
 				) : (
 					<span />
@@ -272,8 +289,12 @@ function AnswerBlock(props: {
 							key={h.chunkId}
 							hit={h}
 							num={i + 1}
+							topScore={topScore}
+							showAnalysis={props.showAnalysis}
+							insertMode={props.insertMode}
 							onOpenPopup={() => props.onOpenSourcePopup(h)}
 							onOpenNote={() => props.onOpenSource(h)}
+							onInsert={(alt) => props.onInsertSource(h, alt)}
 						/>
 					))}
 				</div>
@@ -285,11 +306,19 @@ function AnswerBlock(props: {
 function SourceCard(props: {
 	hit: HybridHit;
 	num: number;
+	topScore: number;
+	showAnalysis: boolean;
+	insertMode: InsertMode;
 	onOpenPopup: () => void;
 	onOpenNote: () => void;
+	onInsert: (altKey: boolean) => void;
 }) {
 	const { hit, num } = props;
 	const group = hit.categoryId === "external" ? "external" : "internal";
+	// 매칭 단어 부근 스니펫 — 검색 카드와 같은 규칙(trace가 없으면 앞부분).
+	const terms = hit.trace?.matchedTerms ?? [];
+	const snippet = makeSnippet(hit.fullText, hit.preview, terms);
+	const ex = props.showAnalysis ? explainHit(hit, props.topScore) : null;
 	return (
 		<div
 			class={`wr-chat-source-card wr-chat-source-${group}`}
@@ -302,17 +331,35 @@ function SourceCard(props: {
 				{hit.heading ? (
 					<div class="wr-chat-source-heading">{hit.heading}</div>
 				) : null}
+				{snippet ? (
+					<div class="wr-chat-source-snippet">
+						{highlightText(snippet, terms)}
+					</div>
+				) : null}
+				{ex ? <ScoreBar ex={ex} /> : null}
 			</div>
-			<button
-				class="wr-chat-source-open"
-				title="노트 열기"
-				onClick={(e) => {
-					e.stopPropagation();
-					props.onOpenNote();
-				}}
-			>
-				↗
-			</button>
+			<div class="wr-chat-source-actions">
+				<button
+					class="wr-chat-source-open"
+					title="노트 열기"
+					onClick={(e) => {
+						e.stopPropagation();
+						props.onOpenNote();
+					}}
+				>
+					↗
+				</button>
+				<button
+					class="wr-chat-source-insert"
+					title={`${INSERT_LABEL[props.insertMode]} — Option(Alt)+클릭: 반대 방식`}
+					onClick={(e) => {
+						e.stopPropagation();
+						props.onInsert(e.altKey);
+					}}
+				>
+					📎
+				</button>
+			</div>
 		</div>
 	);
 }

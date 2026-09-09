@@ -1,13 +1,23 @@
 // hybridSearch 랭킹 불변식 회귀 테스트 — 인메모리 미니 DB.
 // 점수 스냅샷이 아니라 비율·순서·포함/제외만 assert한다(시그니처 변화에 강하게).
 import { describe, it, expect } from "vitest";
-import { hybridSearch } from "../src/search/hybrid";
+import {
+	hybridSearch,
+	VECTOR_NOISE_THRESHOLD,
+	VECTOR_STRONG_SIM,
+} from "../src/search/hybrid";
+
+/** 코사인이 정확히 c인 단위벡터(쿼리 [1,0,0,0] 기준). */
+function vecWithCos(c: number): number[] {
+	return [c, Math.sqrt(1 - c * c), 0, 0];
+}
 import { makeMiniDb, vecOf } from "./helpers/mini-db";
 
 const NO_BOOST = {
 	applyWeight: false,
 	applyHeadingBoost: false,
 	applyOverlapBoost: false,
+	applyCosineBoost: false,
 } as const;
 
 function relClose(a: number, b: number, tol = 1e-9): boolean {
@@ -51,6 +61,69 @@ describe("hybridSearch — RRF 융합", () => {
 			expect(hitB.vectorRank).toBe(1);
 			expect(hitB.bm25Rank).toBeNull();
 			expect(relClose(hitA.rrfScore, hitB.rrfScore)).toBe(true); // 둘 다 1/61
+		} finally {
+			m.close();
+		}
+	});
+});
+
+describe("hybridSearch — 🔬 분석 trace", () => {
+	it("matchedTerms는 실제 토큰 문자열, rrfBm25+rrfVector = rrfScore, passedBy 사유", async () => {
+		const m = await makeMiniDb();
+		try {
+			m.addNote("a.md");
+			m.addNote("b.md");
+			m.addNote("c.md");
+			const a = m.addChunk("a.md", {
+				text: "알파 베타 알파 베타",
+				terms: ["알파", "베타", "알파", "베타"],
+			});
+			const b = m.addChunk("b.md", {
+				text: "감마",
+				terms: ["감마"],
+				vec: [1, 0, 0, 0],
+			});
+			const c = m.addChunk("c.md", {
+				text: "알파 베타",
+				terms: ["알파", "베타"],
+				vec: [0.9, 0.1, 0, 0],
+			});
+			const hits = hybridSearch(m.db, ["알파", "베타"], vecOf(1, 0, 0, 0));
+			for (const h of hits) {
+				expect(h.trace).toBeDefined();
+				expect(
+					relClose(h.trace!.rrfBm25 + h.trace!.rrfVector, h.rrfScore),
+				).toBe(true);
+				expect(h.trace!.matchedTerms.length).toBe(h.matchedQueryTerms);
+				expect(h.trace!.effectiveTerms).toBe(2);
+				expect(h.trace!.requiredTerms).toBe(2);
+			}
+			const byId = (id: number) => hits.find((h) => h.chunkId === id)!;
+			expect(byId(a).trace!.matchedTerms).toEqual(["알파", "베타"]);
+			expect(byId(a).trace!.passedBy).toBe("terms");
+			expect(byId(a).trace!.rrfVector).toBe(0);
+			expect(byId(b).trace!.matchedTerms).toEqual([]);
+			expect(byId(b).trace!.passedBy).toBe("vector");
+			expect(byId(b).trace!.rrfBm25).toBe(0);
+			expect(byId(c).trace!.passedBy).toBe("both");
+		} finally {
+			m.close();
+		}
+	});
+
+	it("검색어 0개(의미 검색만): requiredTerms 0, 벡터 히트는 both가 아닌 terms+vector 규칙대로", async () => {
+		const m = await makeMiniDb();
+		try {
+			m.addNote("v.md");
+			m.addChunk("v.md", { text: "본문", vec: [1, 0, 0, 0] });
+			const hits = hybridSearch(m.db, [], vecOf(1, 0, 0, 0));
+			expect(hits.length).toBe(1);
+			const t = hits[0].trace!;
+			expect(t.requiredTerms).toBe(0);
+			expect(t.effectiveTerms).toBe(0);
+			expect(t.matchedTerms).toEqual([]);
+			// matched 0 >= required 0 이므로 terms도 충족 → both
+			expect(t.passedBy).toBe("both");
 		} finally {
 			m.close();
 		}
@@ -223,8 +296,87 @@ describe("hybridSearch — 부스트", () => {
 	});
 });
 
+describe("hybridSearch — 커버리지 조건·코사인 보너스 (0.8.0)", () => {
+	it("검색어 1개면 커버리지 보너스 없음(끄나 켜나 동일), 2개면 ×1.5", async () => {
+		const m = await makeMiniDb();
+		try {
+			m.addNote("n.md");
+			m.addChunk("n.md", { text: "알파 베타", terms: ["알파", "베타"] });
+			const one = hybridSearch(m.db, ["알파"], null);
+			const oneOff = hybridSearch(m.db, ["알파"], null, {
+				applyOverlapBoost: false,
+			});
+			expect(one[0].matchedQueryTerms).toBe(1);
+			expect(relClose(one[0].finalScore, oneOff[0].finalScore)).toBe(true);
+			const two = hybridSearch(m.db, ["알파", "베타"], null);
+			const twoOff = hybridSearch(m.db, ["알파", "베타"], null, {
+				applyOverlapBoost: false,
+			});
+			expect(relClose(two[0].finalScore / twoOff[0].finalScore, 1.5)).toBe(
+				true,
+			);
+		} finally {
+			m.close();
+		}
+	});
+
+	it("코사인 보너스: 강한 일치(≥VECTOR_STRONG_SIM) → ×1.5, 문턱 정확히 → ×1.0, 끄면 원복", async () => {
+		const m = await makeMiniDb();
+		try {
+			m.addNote("hi.md");
+			m.addNote("lo.md");
+			m.addChunk("hi.md", { text: "본문", vec: vecWithCos(VECTOR_STRONG_SIM) });
+			m.addChunk("lo.md", { text: "본문", vec: vecWithCos(VECTOR_NOISE_THRESHOLD) });
+			const on = hybridSearch(m.db, [], vecOf(1, 0, 0, 0));
+			const off = hybridSearch(m.db, [], vecOf(1, 0, 0, 0), {
+				applyCosineBoost: false,
+			});
+			const pick = (hits: typeof on, p: string) =>
+				hits.find((h) => h.notePath === p)!;
+			expect(relClose(pick(on, "hi.md").vectorScore!, VECTOR_STRONG_SIM, 1e-6)).toBe(true);
+			expect(
+				relClose(pick(on, "hi.md").finalScore / pick(off, "hi.md").finalScore, 1.5),
+			).toBe(true);
+			expect(
+				relClose(pick(on, "lo.md").vectorScore!, VECTOR_NOISE_THRESHOLD, 1e-6),
+			).toBe(true);
+			expect(
+				relClose(pick(on, "lo.md").finalScore, pick(off, "lo.md").finalScore, 1e-6),
+			).toBe(true);
+		} finally {
+			m.close();
+		}
+	});
+
+	it("의미 전용 1위(유사도 1.0)가 단일 토큰 어휘 전용 하위 후보보다 위에 온다", async () => {
+		const m = await makeMiniDb();
+		try {
+			m.addNote("sem.md");
+			m.addChunk("sem.md", { text: "본문", vec: [1, 0, 0, 0] });
+			// 어휘 전용 후보 12개 — tf가 큰 순으로 1..12위
+			for (let i = 0; i < 12; i++) {
+				m.addNote(`lex${i}.md`);
+				m.addChunk(`lex${i}.md`, {
+					text: "알파",
+					terms: Array(12 - i).fill("알파"),
+				});
+			}
+			const hits = hybridSearch(m.db, ["알파"], vecOf(1, 0, 0, 0), {
+				topN: 20,
+				candidateK: 30,
+			});
+			const semIdx = hits.findIndex((h) => h.notePath === "sem.md");
+			expect(semIdx).toBeGreaterThanOrEqual(0);
+			// 1/61×1.5 = 0.02459 vs 어휘 1위 1/61 = 0.01639 → 의미 전용이 1위
+			expect(semIdx).toBe(0);
+		} finally {
+			m.close();
+		}
+	});
+});
+
 describe("hybridSearch — 노이즈 필터", () => {
-	it("토큰 1개 매칭 + 벡터 없음 → 탈락, 코사인 ≥ 0.6 → 생존", async () => {
+	it("토큰 1개 매칭 + 벡터 없음 → 탈락, 코사인 ≥ 문턱 → 생존", async () => {
 		const m = await makeMiniDb();
 		try {
 			m.addNote("both.md");
@@ -248,7 +400,7 @@ describe("hybridSearch — 노이즈 필터", () => {
 			);
 			const paths = hits.map((h) => h.notePath);
 			expect(paths).toContain("both.md");
-			expect(paths).toContain("one-vec.md"); // cos 1.0 ≥ 0.6
+			expect(paths).toContain("one-vec.md"); // cos 1.0 ≥ 문턱
 			expect(paths).not.toContain("one-novec.md");
 		} finally {
 			m.close();

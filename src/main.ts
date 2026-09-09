@@ -1,4 +1,5 @@
-import { Notice, Plugin } from "obsidian";
+import { type Editor, Notice, Plugin } from "obsidian";
+import { paragraphAround } from "./paragraph";
 import type { Database } from "sql.js";
 import {
 	DEFAULT_SETTINGS,
@@ -11,7 +12,11 @@ import {
 } from "./settings";
 import { WeightedRecallSettingTab } from "./settings-tab";
 import { loadOrCreateDb, saveDb } from "./db/persistence";
-import { runIndex } from "./indexer/indexer";
+import { retokenizeAllChunks, runIndex } from "./indexer/indexer";
+import {
+	deriveProtectedTerms,
+	protectedFingerprint,
+} from "./morpheme/protected";
 import { reapplyFolderSettings } from "./indexer/scanner";
 import { embedMissingChunks } from "./embedder/embed-all";
 import { embedTexts } from "./embedder/openai";
@@ -29,9 +34,24 @@ import {
 	preloadMorpheme,
 	destroyMorpheme,
 	benchMorpheme,
+	setProtectedTerms,
 } from "./morpheme";
 
 declare const __DEV__: boolean;
+
+/** 에디터에서 검색 쿼리 결정 — 선택(10자+) 우선, 없으면 커서 문단(10자+). */
+function queryFromEditor(
+	editor: Editor,
+): { text: string; mode: "selection" | "paragraph" } | null {
+	const sel = editor.getSelection().trim();
+	if (sel.length >= MIN_PARAGRAPH_CHARS) return { text: sel, mode: "selection" };
+	const para = paragraphAround(
+		editor.getValue().split("\n"),
+		editor.getCursor().line,
+	);
+	if (para.length >= MIN_PARAGRAPH_CHARS) return { text: para, mode: "paragraph" };
+	return null;
+}
 
 function countChunks(db: Database): number {
 	const row = db.exec("SELECT COUNT(*) FROM chunks")[0];
@@ -49,6 +69,7 @@ export default class WeightedRecallPlugin extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
+		this.applyProtectedTerms();
 		this.addSettingTab(new WeightedRecallSettingTab(this.app, this));
 
 		this.styleEl = document.createElement("style");
@@ -74,21 +95,48 @@ export default class WeightedRecallPlugin extends Plugin {
 			},
 		});
 
+		// 선택이 없어도 커서 문단으로 검색 — 단축키를 붙여 쓰기 좋은 명령.
+		this.addCommand({
+			id: "search-selection-or-paragraph",
+			name: "선택 텍스트 또는 현재 문단으로 참고자료 검색",
+			editorCallback: async (editor, ctx) => {
+				const file = ctx.file;
+				if (!file) return;
+				const q = queryFromEditor(editor);
+				if (!q) {
+					new Notice(
+						`A4P Sermon Desk: 검색할 내용이 너무 짧습니다 — ${MIN_PARAGRAPH_CHARS}자 이상 선택하거나 커서를 문단 안에 두세요`,
+					);
+					return;
+				}
+				const view = await this.openRecallView(false);
+				view?.searchWithText(q.text, file, q.mode);
+			},
+		});
+
+		this.addRibbonIcon("search", "설교 준비 데스크 열기", () => {
+			void this.openRecallView(true);
+		});
+
 		this.registerEvent(
 			this.app.workspace.on("editor-menu", (menu, editor, info) => {
 				const file = info.file;
 				if (!file) return;
-				// 메뉴 빌드 시점에 선택 텍스트를 캡처 — 뷰를 여는 동안
-				// active leaf가 바뀌어도 검색 쿼리가 흔들리지 않는다.
-				const sel = editor.getSelection().trim();
-				if (sel.length < MIN_PARAGRAPH_CHARS) return;
+				// 메뉴 빌드 시점에 쿼리를 캡처 — 뷰를 여는 동안 active leaf가
+				// 바뀌어도 검색 쿼리가 흔들리지 않는다. 선택이 짧으면 커서 문단.
+				const q = queryFromEditor(editor);
+				if (!q) return;
 				menu.addItem((item) =>
 					item
-						.setTitle("선택 텍스트로 참고자료 검색")
+						.setTitle(
+							q.mode === "selection"
+								? "선택 텍스트로 참고자료 검색"
+								: "현재 문단으로 참고자료 검색",
+						)
 						.setIcon("search")
 						.onClick(async () => {
 							const view = await this.openRecallView(false);
-							view?.searchWithText(sel, file);
+							view?.searchWithText(q.text, file, q.mode);
 						}),
 				);
 			}),
@@ -181,6 +229,7 @@ export default class WeightedRecallPlugin extends Plugin {
 									applyWeight: false,
 									applyHeadingBoost: false,
 									applyOverlapBoost: false,
+									applyCosineBoost: false,
 								},
 							},
 							{
@@ -189,6 +238,7 @@ export default class WeightedRecallPlugin extends Plugin {
 									applyWeight: true,
 									applyHeadingBoost: false,
 									applyOverlapBoost: false,
+									applyCosineBoost: false,
 								},
 							},
 							{
@@ -197,6 +247,7 @@ export default class WeightedRecallPlugin extends Plugin {
 									applyWeight: true,
 									applyHeadingBoost: true,
 									applyOverlapBoost: false,
+									applyCosineBoost: false,
 								},
 							},
 							{
@@ -205,6 +256,16 @@ export default class WeightedRecallPlugin extends Plugin {
 									applyWeight: true,
 									applyHeadingBoost: true,
 									applyOverlapBoost: true,
+									applyCosineBoost: false,
+								},
+							},
+							{
+								label: "+cosine",
+								opts: {
+									applyWeight: true,
+									applyHeadingBoost: true,
+									applyOverlapBoost: true,
+									applyCosineBoost: true,
 								},
 							},
 						];
@@ -405,7 +466,17 @@ export default class WeightedRecallPlugin extends Plugin {
 				leaf.view.updateAutoSearchUI();
 				leaf.view.updateProfileUI();
 				leaf.view.updateInsertModeUI();
+				leaf.view.updateResultCountUI();
 			}
+		}
+	}
+
+	/** 열린 뷰들의 마지막 검색을 재실행 (결과 개수 등 검색 시점 설정 변경 시, 설정 탭에서 호출). */
+	rerunRecallViewsSearch(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(
+			RECALL_VIEW_TYPE,
+		)) {
+			if (leaf.view instanceof RecallView) leaf.view.rerunLastSearch();
 		}
 	}
 
@@ -560,6 +631,55 @@ export default class WeightedRecallPlugin extends Plugin {
 		// folders[].weight(구버전 호환 미러)를 활성 프로파일 값으로 동기화하는 단일 관문.
 		mirrorActiveWeights(this.settings);
 		await this.saveData(this.settings);
+		this.applyProtectedTerms();
+	}
+
+	/** 현재 설정에서 형태소 보호 단어를 도출해 토크나이저에 주입(색인·쿼리 공통). */
+	applyProtectedTerms(): void {
+		setProtectedTerms(deriveProtectedTerms(this.settings));
+	}
+
+	/** 현재 보호 단어 지문 — 설정 탭 상태줄·색인 meta 비교용. */
+	protectedFp(): string {
+		return protectedFingerprint(deriveProtectedTerms(this.settings));
+	}
+
+	/** 형태소 색인(chunk_terms)만 재계산 — 임베딩 유지, API 비용 0. 설정 탭 버튼이 호출. */
+	async runRetokenize(): Promise<void> {
+		return this.withBusy(async () => {
+			if (!this.db) {
+				new Notice("A4P Sermon Desk: DB가 로드되지 않았습니다");
+				return;
+			}
+			const progress = new Notice(
+				"A4P Sermon Desk: 형태소 모델 로드 중…",
+				0,
+			);
+			try {
+				await preloadMorpheme();
+				this.applyProtectedTerms();
+				this.dbDirty = true;
+				const r = await retokenizeAllChunks(
+					this.db,
+					this.protectedFp(),
+					(done, total) =>
+						progress.setMessage(
+							`A4P Sermon Desk: 형태소 색인 재계산 ${done}/${total}`,
+						),
+				);
+				await this.persistDb();
+				progress.hide();
+				new Notice(
+					`A4P Sermon Desk: 형태소 색인 재계산 완료 — 청크 ${r.chunks}개, 토큰 ${r.terms}개 (임베딩 유지)`,
+				);
+			} catch (e) {
+				progress.hide();
+				new Notice(
+					`A4P Sermon Desk: 형태소 색인 재계산 실패 — ${(e as Error).message}`,
+				);
+				console.error("[a4p-sermon-desk] retokenize failed", e);
+			}
+		});
 	}
 
 	/** 재색인(기본 변경분만, force면 전체) — 설정 탭 버튼이 호출. */
@@ -583,6 +703,7 @@ export default class WeightedRecallPlugin extends Plugin {
 					this.settings,
 					{
 						force,
+						protectedFp: this.protectedFp(),
 						onProgress: (done, total) =>
 							progress.setMessage(
 								`A4P Sermon Desk: 인덱싱 ${done}/${total}`,

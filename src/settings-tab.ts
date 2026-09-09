@@ -19,6 +19,8 @@ import {
 	CHAT_TOP_K_MIN,
 	CHAT_TOP_K_MAX,
 	clampChatTopK,
+	RESULT_COUNTS,
+	normalizeResultCount,
 	GroupId,
 	FolderEntry,
 	parseDoctrineRaw,
@@ -28,6 +30,7 @@ import {
 	normalizeSettings,
 } from "./settings";
 import { FolderSuggest } from "./folder-suggest";
+import { confirmModal } from "./views/ConfirmModal";
 import {
 	embedDoctrineKeys,
 	embedTagKeys,
@@ -42,7 +45,11 @@ import {
 	getDistinctTagKeys,
 	getMaxEmbeddedAt,
 } from "./db/embeddings";
-import { getMeta, FOLDERS_FP_KEY } from "./db/meta";
+import { getMeta, FOLDERS_FP_KEY, PROTECTED_FP_KEY } from "./db/meta";
+import {
+	deriveProtectedTerms,
+	parseProtectedInput,
+} from "./morpheme/protected";
 import { EMBEDDING_MODEL, MissingApiKeyError } from "./embedder/openai";
 
 interface GroupMeta {
@@ -102,6 +109,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 		this.renderDoctrineSynonyms(containerEl);
 		this.renderDoctrineEmbedding(containerEl);
 		this.renderTagEmbeddings(containerEl);
+		this.renderProtectedTerms(containerEl);
 
 		this.renderChat(containerEl);
 		this.renderInsert(containerEl);
@@ -198,6 +206,86 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 			});
 	}
 
+	/** 🔤 형태소 보호 단어 — garu 오분해 보완. 교리 키워드·동의어는 자동, 직접 추가 가능. */
+	private renderProtectedTerms(containerEl: HTMLElement): void {
+		const s = this.plugin.settings;
+		containerEl.createEl("h4", { text: "🔤 형태소 보호 단어" });
+		containerEl.createEl("p", {
+			text: "한국어 형태소 분석기가 핵심 단어를 잘못 쪼갤 때가 있습니다(예: '거룩해지는' → '해지'로 분해되어 '거룩'이 사라짐). 여기 등록된 단어는 본문에 나오면 항상 검색어로 살립니다. ① 교리 키워드와 ② 동의어는 자동으로 포함되고, 아래에 단어를 직접 더할 수 있습니다(줄바꿈 또는 쉼표 구분, 공백 없는 한 단어).",
+			cls: "setting-item-description",
+		});
+		const auto = deriveProtectedTerms({
+			doctrineKeywords: s.doctrineKeywords,
+			doctrineSynonyms: s.doctrineSynonyms,
+			protectedTerms: [],
+		}).length;
+		const all = deriveProtectedTerms(s);
+		const countEl = containerEl.createEl("p", {
+			cls: "setting-item-description",
+		});
+		const renderCount = () => {
+			const total = deriveProtectedTerms(this.plugin.settings).length;
+			countEl.setText(
+				`자동 포함 ${auto}개(교리 키워드·동의어) + 직접 추가 ${this.plugin.settings.protectedTerms.length}개 = 보호 단어 ${total}개`,
+			);
+		};
+		renderCount();
+
+		new Setting(containerEl)
+			.setName("직접 추가할 보호 단어")
+			.setDesc("예: 거룩, 회개, 십자가 — 저장은 자동. 아래 [형태소 색인 다시 계산]을 눌러야 기존 노트 색인에 반영됩니다.")
+			.addTextArea((ta) => {
+				ta.setPlaceholder("거룩\n회개\n십자가")
+					.setValue(s.protectedTerms.join("\n"))
+					.onChange(async (value) => {
+						this.plugin.settings.protectedTerms = parseProtectedInput(value);
+						await this.plugin.saveSettings();
+						renderCount();
+						renderStatus();
+					});
+				ta.inputEl.rows = 4;
+				ta.inputEl.style.width = "100%";
+			});
+
+		const statusEl = containerEl.createEl("p", {
+			cls: "setting-item-description",
+		});
+		const renderStatus = () => {
+			const db = this.plugin.db;
+			let chunks = 0;
+			if (db) {
+				const row = db.exec("SELECT COUNT(*) FROM chunks")[0];
+				chunks = row ? Number(row.values[0][0]) : 0;
+			}
+			if (!db || chunks === 0) {
+				statusEl.setText("색인이 아직 없습니다 — 재색인 때 보호 단어가 함께 반영됩니다.");
+				return;
+			}
+			const inSync = getMeta(db, PROTECTED_FP_KEY) === this.plugin.protectedFp();
+			statusEl.setText(
+				inSync
+					? "✅ 보호 단어가 형태소 색인에 반영되어 있습니다."
+					: "⚠️ 보호 단어가 색인과 다릅니다(단어 변경 또는 0.8.0 업그레이드). [형태소 색인 다시 계산]을 한 번 눌러주세요 — 임베딩은 그대로 두므로 API 비용이 없고 보통 1분 안에 끝납니다.",
+			);
+		};
+		renderStatus();
+
+		new Setting(containerEl)
+			.setName("형태소 색인 다시 계산")
+			.setDesc(
+				`전체 청크의 검색어 색인만 새 보호 단어 규칙으로 다시 만듭니다(현재 ${all.length}개). 임베딩·노트 데이터는 건드리지 않습니다.`,
+			)
+			.addButton((btn) => {
+				btn.setButtonText("형태소 색인 다시 계산 (임베딩 유지 · API 비용 0)")
+					.setCta()
+					.onClick(async () => {
+						btn.setButtonText("재계산 중…").setDisabled(true);
+						await this.plugin.runRetokenize();
+						this.display();
+					});
+			});
+	}
+
 	private renderChat(containerEl: HTMLElement): void {
 		containerEl.createEl("h3", { text: "💬 채팅" });
 		containerEl.createEl("p", {
@@ -236,7 +324,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 	}
 
 	private renderInsert(containerEl: HTMLElement): void {
-		containerEl.createEl("h3", { text: "📎 삽입 방식" });
+		containerEl.createEl("h3", { text: "📎 결과 표시·삽입" });
 		new Setting(containerEl)
 			.setName("검색 결과를 노트에 넣는 방식")
 			.setDesc(
@@ -249,6 +337,38 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.insertMode)
 					.onChange(async (value) => {
 						this.plugin.settings.insertMode = value as InsertMode;
+						await this.plugin.saveSettings();
+						this.plugin.refreshRecallViewsUI();
+					});
+			});
+		new Setting(containerEl)
+			.setName("검색 결과 개수")
+			.setDesc(
+				"의미·태그 검색에서 패널에 표시할 결과 카드 최대 개수입니다(내 메모·외부 자료 합산). 기본 10. 데스크 패널의 '결과' 칩으로도 바꿀 수 있으며, 바꾸면 같은 문단으로 즉시 재검색합니다(추가 API 비용 없음). 채팅의 '참고 자료 개수'와는 별개입니다.",
+			)
+			.addDropdown((dropdown) => {
+				for (const n of RESULT_COUNTS) dropdown.addOption(String(n), `${n}개`);
+				dropdown
+					.setValue(String(this.plugin.settings.resultCount))
+					.onChange(async (value) => {
+						this.plugin.settings.resultCount = normalizeResultCount(
+							Number(value),
+						);
+						await this.plugin.saveSettings();
+						this.plugin.refreshRecallViewsUI();
+						this.plugin.rerunRecallViewsSearch();
+					});
+			});
+		new Setting(containerEl)
+			.setName("🔬 검색 근거 분석 표시")
+			.setDesc(
+				"각 결과 카드에 점수 구성 막대(어휘·의미 비율, 가중치·제목·포함률 배율)와 '왜 이 결과?' 상세를 표시합니다. 시연·점검용이며, 기본은 꺼짐입니다. 데스크 패널의 '🔬 분석' 칩으로도 켜고 끌 수 있습니다.",
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.showAnalysis)
+					.onChange(async (value) => {
+						this.plugin.settings.showAnalysis = value;
 						await this.plugin.saveSettings();
 						this.plugin.refreshRecallViewsUI();
 					});
@@ -1068,18 +1188,28 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 	private renderResetButton(containerEl: HTMLElement): void {
 		containerEl.createEl("h3", { text: "초기화" });
 		new Setting(containerEl)
-			.setName("기본값으로 되돌리기")
+			.setName("폴더 설정 초기화")
 			.setDesc(
-				"모든 폴더·가중치·제외 목록을 초기 권장값으로 되돌립니다. (되돌린 뒤 ‘변경사항 적용’을 눌러주세요.)",
+				"검색 대상 폴더·테마별 가중치·제외 폴더만 기본값으로 되돌립니다. API 키, 교리 키워드·동의어, 채팅·삽입·표시 설정은 그대로 둡니다. 되돌린 뒤 폴더를 다시 추가하고 [재색인 (변경분만)]을 눌러주세요.",
 			)
 			.addButton((btn: ButtonComponent) => {
 				btn.setButtonText("초기화")
 					.setWarning()
 					.onClick(async () => {
+						const ok = await confirmModal(this.app, {
+							title: "폴더 설정을 초기화할까요?",
+							body: `검색 대상 폴더 ${this.plugin.settings.folders.length}개와 테마 ${this.plugin.settings.profiles.length}개의 가중치, 제외 폴더 목록이 지워집니다. API 키·교리 키워드·동의어는 유지됩니다. 이 동작은 되돌릴 수 없습니다.`,
+							confirmText: "초기화",
+							warning: true,
+						});
+						if (!ok) return;
+						const s = this.plugin.settings;
+						s.folders = [];
+						s.profiles = [];
+						s.activeProfileId = "";
+						s.excludedFolders = [...DEFAULT_SETTINGS.excludedFolders];
 						// normalize가 기본 테마(설교·연구) 백필까지 보장.
-						this.plugin.settings = normalizeSettings(
-							JSON.parse(JSON.stringify(DEFAULT_SETTINGS)),
-						);
+						this.plugin.settings = normalizeSettings(s);
 						await this.plugin.saveSettings();
 						this.plugin.refreshRecallViewsUI();
 						this.display();

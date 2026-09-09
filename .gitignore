@@ -11,3 +11,4 @@ index.db.bak
 *.log
 .ai-ready/
 docs/RESUME.md
+docs/ACCURACY-*.md

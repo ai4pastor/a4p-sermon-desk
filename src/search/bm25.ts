@@ -15,14 +15,16 @@ interface Bm25Stats {
 }
 
 // 문서 통계(N·avgdl·문서길이 맵) 캐시 — 매 쿼리 전체 집계를 피한다.
-// chunks는 UPDATE 없이 delete+insert(AUTOINCREMENT)이고 chunk_terms는
-// chunks와 함께만 변하므로, chunks의 COUNT+MAX(id) 지문으로 감지된다.
+// chunks는 UPDATE 없이 delete+insert(AUTOINCREMENT)라 COUNT+MAX(id)로 감지되고,
+// chunk_terms만 바뀌는 경우(보호 단어 재계산)는 chunk_terms COUNT로 감지된다.
 let statsCache: { fp: string; stats: Bm25Stats } | null = null;
 
 function chunksFingerprint(db: Database): string {
-	const r = db.exec("SELECT COUNT(*), MAX(id) FROM chunks");
+	const r = db.exec(
+		"SELECT COUNT(*), MAX(id), (SELECT COUNT(*) FROM chunk_terms) FROM chunks",
+	);
 	const row = r[0]?.values[0];
-	return row ? `${row[0]}:${row[1]}` : "0:null";
+	return row ? `${row[0]}:${row[1]}:${row[2]}` : "0:null:0";
 }
 
 function loadStats(db: Database): Bm25Stats {
