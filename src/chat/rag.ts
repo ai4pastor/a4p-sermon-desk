@@ -29,16 +29,22 @@ export function maxContextCharsFor(topK: number): number {
 	return topK * (MAX_CHUNK_CHARS + 300);
 }
 
-export const CHAT_SYSTEM_PROMPT = `당신은 한국 개신교 목회자의 설교 준비를 돕는 조수입니다.
+/**
+ * 채팅 시스템 프롬프트 — role은 활성 테마 프로파일의 chatRole(예: "한국 개신교 목회자의 설교 준비를 돕는 조수").
+ * 규칙 문장은 역할 중립("사용자가 바로 활용").
+ */
+export function chatSystemPrompt(role: string): string {
+	return `당신은 ${role.trim() || "사용자의 노트 조사를 돕는 조수"}입니다.
 사용자의 질문 아래에 [노트 자료]로 사용자의 옵시디언 노트에서 검색된 발췌문이 번호와 함께 제공됩니다.
 
 규칙:
 - 반드시 [노트 자료]에 근거하여 한국어로 답하세요.
 - 자료에 근거한 모든 문장과 목록 항목의 끝에는 반드시 [1] 형식의 출처 번호를 표기하세요. 출처가 여러 개면 [1][2]처럼 각각 따로 표기하세요 ("[1, 2]" 같은 묶음 표기 금지). 출처 표기가 없는 주장이 없어야 합니다.
 - 자료에 없는 내용은 "노트에서 찾지 못했습니다"라고 밝히세요. 일반 지식으로 보충할 때는 그것이 노트 밖의 내용임을 분명히 표시하세요.
-- 목회자가 설교 준비에 바로 활용할 수 있도록 간결하게, 요점·개요 중심으로 답하세요.
+- 사용자가 바로 활용할 수 있도록 간결하게, 요점·개요 중심으로 답하세요.
 - 답변이 여러 부분으로 나뉠 때는 마크다운 소제목(### 제목)으로 구분하고, 세부 항목은 목록(-)으로 정리하세요.
 - 성경 인용과 용어는 자료에 쓰인 표기를 따르세요.`;
+}
 
 /** 노트당 최대 maxPerNote개 청크만 남긴다 (점수순 유지). */
 export function capPerNote(
@@ -146,9 +152,10 @@ export function buildChatMessages(
 	history: ChatMessage[],
 	question: string,
 	contextBlock: string,
+	role: string,
 ): ApiMessage[] {
 	const msgs: ApiMessage[] = [
-		{ role: "system", content: CHAT_SYSTEM_PROMPT },
+		{ role: "system", content: chatSystemPrompt(role) },
 	];
 	for (const m of trimHistory(history, CHAT_MAX_HISTORY_TURNS)) {
 		msgs.push({ role: m.role, content: m.content });

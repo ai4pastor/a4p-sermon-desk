@@ -1202,9 +1202,9 @@ export class RecallView extends ItemView {
 		if (s.keys) {
 			const k = s.keys;
 			const groups: [string, string[]][] = [
-				["교리 정확", k.dExact],
-				["교리 동의어", k.dSyn],
-				["교리 의미 유사", k.dVec],
+				["키워드 정확", k.dExact],
+				["키워드 동의어", k.dSyn],
+				["키워드 의미 유사", k.dVec],
 				["태그 정확", k.tExact],
 				["태그 의미 유사", k.tVec],
 			];
@@ -1429,7 +1429,12 @@ export class RecallView extends ItemView {
 			this.renderChat();
 			// 히스토리에는 최신 질문을 제외한 이전 턴만 넣는다.
 			const history = this.chatMessages.slice(0, -1);
-			const messages = buildChatMessages(history, text, ctx.block);
+			const messages = buildChatMessages(
+				history,
+				text,
+				ctx.block,
+				getActiveProfile(this.host.settings).chatRole,
+			);
 			const answer = await chatComplete(
 				messages,
 				this.host.settings.chatModel,

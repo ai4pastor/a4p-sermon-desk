@@ -57,6 +57,7 @@ describe("chatComplete 스모크 (실제 API)", () => {
 				[],
 				"내 노트에서 '목자' 이미지가 어떻게 전개되는지 요약해줘",
 				buildContextBlock(hits),
+				"한국 개신교 목회자의 설교 준비를 돕는 조수",
 			);
 			const answer = await chatComplete(messages, "gpt-5-mini", API_KEY);
 			console.log("\n=== 스모크 테스트 답변 ===\n" + answer + "\n");

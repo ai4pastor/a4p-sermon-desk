@@ -216,7 +216,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 			});
 	}
 
-	/** 🔤 형태소 보호 단어 — garu 오분해 보완. 교리 키워드·동의어는 자동, 직접 추가 가능. */
+	/** 🔤 형태소 보호 단어 — garu 오분해 보완. 어휘 사전 키워드·동의어는 자동, 직접 추가 가능. */
 	private renderProtectedTerms(containerEl: HTMLElement): void {
 		const s = this.plugin.settings;
 		containerEl.createEl("h4", { text: "🔤 형태소 보호 단어" });

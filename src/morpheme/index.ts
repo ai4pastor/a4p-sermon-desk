@@ -71,7 +71,7 @@ export function tokenizeNaive(text: string): string[] {
 		.filter((s) => s.length >= 2 && !KO_STOPWORDS.has(s));
 }
 
-// 보호 단어(교리 키워드·동의어·직접 추가) — main.ts가 설정 로드/저장 시 주입한다.
+// 보호 단어(어휘 사전 키워드·동의어·직접 추가) — main.ts가 설정 로드/저장 시 주입한다.
 let protectedTerms: readonly string[] = [];
 
 export function setProtectedTerms(terms: readonly string[]): void {

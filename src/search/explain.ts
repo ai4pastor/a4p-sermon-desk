@@ -2,7 +2,7 @@
 // 순수 함수 — obsidian·DB 의존 없음. 공식은 hybrid.ts/tag.ts와 같은 상수를 참조한다.
 //
 // 정직한 분해 원칙: 막대 세그먼트는 "더해지는" 성분(RRF의 BM25 몫·벡터 몫,
-// 태그 모드의 교리·태그 가중치 합)만 나눈다. 곱해지는 인자(폴더 가중치·제목
+// 태그 모드의 키워드(어휘 사전)·태그 가중치 합)만 나눈다. 곱해지는 인자(폴더 가중치·제목
 // 일치·포함률)는 세그먼트가 아니라 배율 칩으로 따로 보인다.
 import {
 	HEADING_BOOST,
@@ -20,7 +20,7 @@ export interface HitExplanation {
 	mode: "hybrid" | "tag";
 	/** finalScore / topScore, 0~1로 clamp. topScore≤0이면 0. */
 	relative: number;
-	/** 세그먼트 비율 — hybrid: BM25/벡터, tag: 교리/태그. 합 = 1 (base 0이면 둘 다 0). */
+	/** 세그먼트 비율 — hybrid: BM25/벡터, tag: 키워드/태그. 합 = 1 (base 0이면 둘 다 0). */
 	primaryShare: number;
 	secondaryShare: number;
 	/** hybrid: rrfScore, tag: rawScore(키 가중합). */
@@ -61,9 +61,9 @@ export interface HitExplanation {
 }
 
 export const KIND_LABEL_KO: Record<MatchedKey["kind"], string> = {
-	dExact: "교리 정확 일치",
-	dSyn: "교리 동의어",
-	dVec: "교리 의미 유사",
+	dExact: "키워드 정확 일치",
+	dSyn: "키워드 동의어",
+	dVec: "키워드 의미 유사",
 	tExact: "태그 정확 일치",
 	tVec: "태그 의미 유사",
 };

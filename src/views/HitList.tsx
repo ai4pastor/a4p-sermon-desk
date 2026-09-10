@@ -429,12 +429,12 @@ function fmt(n: number | null | undefined, digits: number): string {
 
 /**
  * 상대 관련도 막대. 길이 = 1위 대비 finalScore, 세그먼트 = 더해지는 성분의 비율
- * (의미 검색: 어휘 BM25 ⇄ 의미 벡터, 태그 검색: 교리 ⇄ 태그). 곱해지는 인자는 칩.
+ * (의미 검색: 어휘 BM25 ⇄ 의미 벡터, 태그 검색: 키워드 ⇄ 태그). 곱해지는 인자는 칩.
  */
 export function ScoreBar({ ex }: { ex: HitExplanation }) {
 	const pct = Math.round(ex.relative * 100);
 	const isTag = ex.mode === "tag";
-	const p = isTag ? "교리" : "어휘";
+	const p = isTag ? "키워드" : "어휘";
 	const s = isTag ? "태그" : "의미";
 	const w1 = ex.relative * ex.primaryShare * 100;
 	const w2 = ex.relative * ex.secondaryShare * 100;
@@ -630,7 +630,7 @@ function WhyTag(props: {
 	return (
 		<>
 			<div class="wr-why-note">
-				태그·교리 매칭 — 의미 검색과 다른 점수 체계입니다
+				태그·키워드(어휘 사전) 매칭 — 의미 검색과 다른 점수 체계입니다
 			</div>
 			<WhyRow label="근거 키">
 				{t.keys.length === 0 ? (
@@ -638,7 +638,7 @@ function WhyTag(props: {
 				) : (
 					<span
 						class="wr-why-keys"
-						title="가중치: 교리 정확 3 / 교리 동의어 2 / 교리 의미 유사 1 / 태그 정확 1 / 태그 의미 유사 0.5"
+						title="가중치: 키워드 정확 3 / 키워드 동의어 2 / 키워드 의미 유사 1 / 태그 정확 1 / 태그 의미 유사 0.5"
 					>
 						{t.keys.map((k) => (
 							<span class="wr-why-key" key={`${k.kind}:${k.key}`}>
@@ -655,7 +655,7 @@ function WhyTag(props: {
 				{fmt(t.rawScore, 1)}
 				<span class="wr-why-muted">
 					{" "}
-					(교리 {fmt(t.doctrineSum, 1)} · 태그 {fmt(t.tagSum, 1)})
+					(키워드 {fmt(t.doctrineSum, 1)} · 태그 {fmt(t.tagSum, 1)})
 				</span>
 			</WhyRow>
 			<WhyRow label="배율">
@@ -666,7 +666,7 @@ function WhyTag(props: {
 				<span class="wr-why-muted">(1위 대비 {pct}%)</span>
 			</WhyRow>
 			<div class="wr-why-note">
-				미리보기는 매칭 키가 나오는 문단입니다 (없으면 첫 문단 — 태그·교리는
+				미리보기는 매칭 키가 나오는 문단입니다 (없으면 첫 문단 — 태그·키워드는
 				프론트매터에만 있을 수 있음)
 			</div>
 		</>
@@ -723,9 +723,9 @@ const MAX_KEY_CHIPS = 6;
 const MAX_TAG_CHIPS = 5;
 
 const KEY_KIND_LABEL: Record<string, string> = {
-	dExact: "교리 키워드와 정확히 일치",
-	dSyn: "교리 동의어로 일치",
-	dVec: "의미가 비슷해 발견된 교리 (벡터)",
+	dExact: "어휘 사전 키워드와 정확히 일치",
+	dSyn: "어휘 사전 동의어로 일치",
+	dVec: "의미가 비슷해 발견된 키워드 (벡터)",
 	tExact: "태그와 정확히 일치",
 	tVec: "의미가 비슷해 발견된 태그 (벡터)",
 };

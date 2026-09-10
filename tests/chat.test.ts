@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { HybridHit } from "../src/search/hybrid";
 import {
-	CHAT_SYSTEM_PROMPT,
+	chatSystemPrompt,
 	CHAT_MAX_HISTORY_TURNS,
 	EMPTY_CONTEXT_MARKER,
 	MAX_CHUNK_CHARS,
@@ -15,6 +15,10 @@ import {
 	buildChatMessages,
 	type ChatMessage,
 } from "../src/chat/rag";
+import {
+	DEFAULT_CHAT_ROLE_RESEARCH,
+	DEFAULT_CHAT_ROLE_SERMON,
+} from "../src/settings";
 
 function hit(partial: Partial<HybridHit>): HybridHit {
 	return {
@@ -183,10 +187,15 @@ describe("trimHistory", () => {
 
 describe("buildChatMessages", () => {
 	it("system이 첫 메시지이고 최신 질문에 자료+질문이 붙는다", () => {
-		const out = buildChatMessages([], "십자가란?", "[1] a (a.md)\n본문");
+		const out = buildChatMessages(
+			[],
+			"십자가란?",
+			"[1] a (a.md)\n본문",
+			DEFAULT_CHAT_ROLE_SERMON,
+		);
 		expect(out[0]).toEqual({
 			role: "system",
-			content: CHAT_SYSTEM_PROMPT,
+			content: chatSystemPrompt(DEFAULT_CHAT_ROLE_SERMON),
 		});
 		const last = out[out.length - 1];
 		expect(last.role).toBe("user");
@@ -202,11 +211,28 @@ describe("buildChatMessages", () => {
 				{ role: "assistant", content: `a${i}` },
 			);
 		}
-		const out = buildChatMessages(history, "새 질문", "자료");
+		const out = buildChatMessages(history, "새 질문", "자료", DEFAULT_CHAT_ROLE_SERMON);
 		// system + 히스토리(≤캡) + 최신 user
 		expect(out.length).toBe(1 + CHAT_MAX_HISTORY_TURNS + 1);
 		const mid = out.slice(1, -1);
 		expect(mid.every((m) => !m.content.includes("[노트 자료]"))).toBe(true);
 		expect(mid[0].role).toBe("user");
+	});
+});
+
+describe("chatSystemPrompt — 테마 프로파일별 역할", () => {
+	it("첫 문장에 역할이 들어가고 규칙 문장은 역할 중립이다", () => {
+		const sermon = chatSystemPrompt(DEFAULT_CHAT_ROLE_SERMON);
+		const research = chatSystemPrompt(DEFAULT_CHAT_ROLE_RESEARCH);
+		expect(sermon.startsWith(`당신은 ${DEFAULT_CHAT_ROLE_SERMON}입니다.`)).toBe(true);
+		expect(research.startsWith(`당신은 ${DEFAULT_CHAT_ROLE_RESEARCH}입니다.`)).toBe(true);
+		expect(sermon).not.toBe(research);
+		// 역할 외 본문은 동일(출처 표기 규칙 등)
+		expect(sermon.split("\n").slice(1)).toEqual(research.split("\n").slice(1));
+		expect(sermon).not.toContain("목회자가 설교 준비에");
+		expect(sermon).toContain("[1] 형식의 출처 번호");
+	});
+	it("빈 역할은 중립 폴백", () => {
+		expect(chatSystemPrompt("  ")).toContain("당신은 사용자의 노트 조사를 돕는 조수입니다.");
 	});
 });
