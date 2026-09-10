@@ -31,6 +31,8 @@ import {
 	foldersFingerprint,
 	getActiveProfile,
 	makeProfileId,
+	makeLexiconId,
+	defaultChatRole,
 	normalizeSettings,
 	isUnderFolder,
 	DEFAULT_IDEA_CALLOUT,
@@ -533,9 +535,101 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 				text: "등록된 어휘 사전이 없습니다. 예: 이름 ‘교리’ · 매핑 필드 ‘doctrine’ · 분야 ‘한국 기독교 신학’.",
 				cls: "setting-item-description",
 			});
-			return;
 		}
 		for (const lex of s.lexicons) this.renderLexiconCard(containerEl, lex);
+		this.renderAddLexiconRow(containerEl);
+	}
+
+	/** ＋ 새 어휘 사전 — 만든 사전은 어느 테마에도 자동 바인딩하지 않는다(테마 프로파일에서 켬). */
+	private renderAddLexiconRow(containerEl: HTMLElement): void {
+		const s = this.plugin.settings;
+		const addEl = containerEl.createDiv({ cls: "wr-cat-add wr-lexicon-add" });
+		let nameC: TextComponent;
+		let fieldsC: TextComponent;
+		let domainC: TextComponent;
+		new Setting(addEl)
+			.setName("＋ 새 어휘 사전")
+			.setDesc(
+				"이름·매핑 필드·분야를 넣고 [추가]를 누르세요. 만든 사전은 어느 테마에도 자동으로 붙지 않습니다 — 위 ‘🎨 테마 프로파일’에서 켜 주세요.",
+			)
+			.addText((t) => {
+				nameC = t;
+				t.setPlaceholder("이름 (예: 개념)");
+			})
+			.addText((t) => {
+				fieldsC = t;
+				t.setPlaceholder("필드 (예: concept)");
+			})
+			.addText((t) => {
+				domainC = t;
+				t.setPlaceholder("분야 (예: AI 윤리·기술 철학)");
+			})
+			.addButton((btn) => {
+				btn.setButtonText("추가")
+					.setCta()
+					.onClick(async () => {
+						const name = nameC.getValue().trim();
+						if (!name) {
+							new Notice("어휘 사전 이름을 입력해주세요.");
+							return;
+						}
+						if (s.lexicons.some((l) => l.name === name)) {
+							new Notice("같은 이름의 어휘 사전이 이미 있습니다.");
+							return;
+						}
+						const fields = fieldsC
+							.getValue()
+							.split(",")
+							.map((f) => f.trim())
+							.filter((f) => f.length > 0);
+						s.lexicons.push({
+							id: makeLexiconId(),
+							name,
+							fields,
+							domain: domainC.getValue().trim(),
+							raw: "",
+							keywords: [],
+							synonyms: {},
+						});
+						await this.plugin.saveSettings();
+						new Notice(
+							`‘${name}’ 어휘 사전을 만들었습니다. 아래 카드에서 ① 키워드를 등록하고, 🎨 테마 프로파일에서 켜 주세요.`,
+						);
+						this.display();
+					});
+			});
+	}
+
+	/** 🗑 어휘 사전 삭제 — 설정(전 테마의 lexiconIds 포함)과 DB(노트 매핑·키 임베딩) 모두. 확인 모달 후. */
+	private async deleteLexicon(lex: Lexicon): Promise<void> {
+		const s = this.plugin.settings;
+		const users = s.profiles
+			.filter((p) => p.lexiconIds.includes(lex.id))
+			.map((p) => p.name);
+		const ok = await confirmModal(this.app, {
+			title: `‘${lex.name}’ 어휘 사전을 삭제할까요?`,
+			body: `키워드 ${lex.keywords.length}개와 동의어, 키 임베딩, 노트 매핑이 지워집니다.${
+				users.length > 0 ? ` 이 사전을 쓰는 테마: ${users.join(", ")}.` : ""
+			} 이 동작은 되돌릴 수 없습니다 — 다시 만들면 ①②③을 다시 해야 합니다.`,
+			confirmText: "삭제",
+			warning: true,
+		});
+		if (!ok) return;
+		s.lexicons = s.lexicons.filter((l) => l.id !== lex.id);
+		for (const p of s.profiles) {
+			p.lexiconIds = p.lexiconIds.filter((id) => id !== lex.id);
+		}
+		const db = this.plugin.db;
+		if (db) {
+			db.run("DELETE FROM note_lexicon_keys WHERE lexicon_id = ?", [lex.id]);
+			db.run("DELETE FROM key_embeddings WHERE scope = ?", [lexScope(lex.id)]);
+			this.plugin.markDbDirty();
+			await this.plugin.persistDb();
+		}
+		await this.plugin.saveSettings();
+		this.plugin.rerunRecallViewsSearch();
+		new Notice(`‘${lex.name}’ 어휘 사전을 삭제했습니다.`);
+		this.display();
 	}
 
 	private renderLexiconCard(containerEl: HTMLElement, lex: Lexicon): void {
@@ -545,6 +639,12 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 		const header = groupEl.createDiv({ cls: "wr-group-header" });
 		header.createSpan({ text: "📚", cls: "wr-group-icon" });
 		const titleEl = header.createSpan({ text: lex.name });
+		const delBtn = header.createEl("button", {
+			text: "🗑 삭제",
+			cls: "wr-lexicon-del",
+			title: "이 어휘 사전을 삭제합니다 (키워드·동의어·키 임베딩·노트 매핑 포함)",
+		});
+		delBtn.addEventListener("click", () => void this.deleteLexicon(lex));
 
 		// 이름·매핑 필드·분야 — 입력마다 저장만 하고 display()는 부르지 않는다(포커스 유지).
 		new Setting(groupEl)
@@ -1124,6 +1224,52 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 						new Notice(`‘${removed.name}’ 테마를 삭제했습니다.`);
 						await refreshAfterChange();
 					});
+			});
+
+		// 이 테마가 쓰는 어휘 사전 — 토글은 저장 + 재검색만(재렌더 없음, 재색인 불필요).
+		if (s.lexicons.length === 0) {
+			new Setting(groupEl)
+				.setName("이 테마가 쓰는 어휘 사전")
+				.setDesc(
+					"등록된 어휘 사전이 없습니다 — 아래 ‘📚 어휘 사전(렉시콘)’에서 만들면 여기서 켤 수 있습니다.",
+				);
+		} else {
+			s.lexicons.forEach((lex, i) => {
+				new Setting(groupEl)
+					.setName(i === 0 ? "이 테마가 쓰는 어휘 사전" : "")
+					.setDesc(`📚 ${lex.name}${lex.keywords.length > 0 ? ` · 키워드 ${lex.keywords.length}개` : " · 키워드 없음"}`)
+					.addToggle((t) =>
+						t
+							.setValue(active.lexiconIds.includes(lex.id))
+							.onChange(async (v) => {
+								if (v) {
+									if (!active.lexiconIds.includes(lex.id)) {
+										active.lexiconIds.push(lex.id);
+									}
+								} else {
+									active.lexiconIds = active.lexiconIds.filter(
+										(id) => id !== lex.id,
+									);
+								}
+								await this.plugin.saveSettings();
+								this.plugin.rerunRecallViewsSearch();
+							}),
+					);
+			});
+		}
+		new Setting(groupEl)
+			.setName("채팅 역할")
+			.setDesc(
+				"채팅 탭 시스템 프롬프트의 첫 문장 — “당신은 ○○입니다.” 테마마다 다르게 둘 수 있고, 비우면 기본 문구로 돌아갑니다.",
+			)
+			.addText((t) => {
+				t.setPlaceholder(defaultChatRole(active.id))
+					.setValue(active.chatRole)
+					.onChange(async (v) => {
+						active.chatRole = v.trim() || defaultChatRole(active.id);
+						await this.plugin.saveSettings();
+					});
+				t.inputEl.style.minWidth = "280px";
 			});
 
 		let nameComp: TextComponent;

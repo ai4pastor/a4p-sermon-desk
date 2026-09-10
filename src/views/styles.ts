@@ -926,6 +926,18 @@ export const WR_STYLES = `
 .wr-group-excluded {
 	border-left-color: var(--text-muted);
 }
+.wr-group-lexicon {
+	border-left-color: var(--color-purple, #a882ff);
+}
+.wr-group-lexicon .wr-lexicon-del {
+	margin-left: auto;
+	font-size: var(--font-ui-smaller);
+	font-weight: 500;
+	padding: 2px 10px;
+}
+.wr-group-lexicon h4 {
+	margin: 18px 0 4px;
+}
 .wr-group-header {
 	display: flex;
 	align-items: center;
