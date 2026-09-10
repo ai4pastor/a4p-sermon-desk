@@ -69,6 +69,11 @@ export const RECALL_VIEW_TYPE = "a4p-sermon-desk-view";
 
 const DEBOUNCE_MS = 2500;
 export const MIN_PARAGRAPH_CHARS = 10;
+/**
+ * 사용자가 직접 드래그해 선택한 텍스트의 최소 길이(우클릭·명령). 의도가 명확하니 짧아도 허용 —
+ * 태그 검색은 "칭의" 2자로 충분하다. 자동 검색(문단·선택 폴링)은 MIN_PARAGRAPH_CHARS 유지.
+ */
+export const MIN_SELECTION_CHARS = 2;
 const SELECTION_POLL_MS = 250;
 
 export interface RecallViewHost {

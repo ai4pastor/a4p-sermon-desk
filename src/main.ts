@@ -27,6 +27,7 @@ import {
 	RecallView,
 	RECALL_VIEW_TYPE,
 	MIN_PARAGRAPH_CHARS,
+	MIN_SELECTION_CHARS,
 } from "./views/RecallView";
 import { WR_STYLES } from "./views/styles";
 import {
@@ -40,12 +41,12 @@ import {
 
 declare const __DEV__: boolean;
 
-/** 에디터에서 검색 쿼리 결정 — 선택(10자+) 우선, 없으면 커서 문단(10자+). */
+/** 에디터에서 검색 쿼리 결정 — 직접 선택(2자+) 우선, 없으면 커서 문단(10자+). */
 function queryFromEditor(
 	editor: Editor,
 ): { text: string; mode: "selection" | "paragraph" } | null {
 	const sel = editor.getSelection().trim();
-	if (sel.length >= MIN_PARAGRAPH_CHARS) return { text: sel, mode: "selection" };
+	if (sel.length >= MIN_SELECTION_CHARS) return { text: sel, mode: "selection" };
 	const para = paragraphAround(
 		editor.getValue().split("\n"),
 		editor.getCursor().line,
@@ -106,7 +107,7 @@ export default class WeightedRecallPlugin extends Plugin {
 				const q = queryFromEditor(editor);
 				if (!q) {
 					new Notice(
-						`A4P Sermon Desk: 검색할 내용이 너무 짧습니다 — ${MIN_PARAGRAPH_CHARS}자 이상 선택하거나 커서를 문단 안에 두세요`,
+						`A4P Sermon Desk: 검색할 내용이 너무 짧습니다 — ${MIN_SELECTION_CHARS}자 이상 선택하거나 커서를 ${MIN_PARAGRAPH_CHARS}자 이상인 문단 안에 두세요`,
 					);
 					return;
 				}
