@@ -18,6 +18,7 @@ import type {
 } from "../settings";
 import {
 	RESULT_COUNTS,
+	getActiveLexicons,
 	getActiveProfile,
 	makeWeightResolver,
 } from "../settings";
@@ -162,8 +163,11 @@ export class RecallView extends ItemView {
 	private suppressAutoRefreshPath: string | null = null;
 	private suppressTimer: number | null = null;
 	private lastQueryCtx: { text: string; mode: QueryContext["mode"]; filePath: string } | null = null;
-	private synonymIndex: Map<string, string[][]> = new Map();
-	private synonymIndexSrc: Record<string, string[]> | null = null;
+	/** 렉시콘별 동의어 어간 인덱스 — synonyms 객체 참조가 바뀔 때만 재계산. */
+	private synonymIndexes = new Map<
+		string,
+		{ src: Record<string, string[]>; index: Map<string, string[][]> }
+	>();
 	private keyEmbeddings: {
 		lexicon: Map<string, Float32Array>;
 		tag: Map<string, Float32Array>;
@@ -925,18 +929,36 @@ export class RecallView extends ItemView {
 		queryEmbedding: Float32Array | null,
 		resolveWeight: (notePath: string) => number,
 	): Promise<void> {
-		const synonyms = this.host.settings.doctrineSynonyms;
-		if (this.synonymIndexSrc !== synonyms) {
-			this.synonymIndex = await buildSynonymTokenIndex(synonyms);
-			this.synonymIndexSrc = synonyms;
-			if (gen !== this.refreshGen) return;
+		// 활성 테마가 쓰는 어휘 사전만 — 키 범위·동의어·키 임베딩 모두 이 범위로.
+		const activeLexicons = getActiveLexicons(this.host.settings);
+		const lexiconIds = activeLexicons.map((l) => l.id);
+		for (const id of [...this.synonymIndexes.keys()]) {
+			if (!this.host.settings.lexicons.some((l) => l.id === id)) {
+				this.synonymIndexes.delete(id);
+			}
 		}
-		const lexiconIds = ["doctrine"];
+		// 렉시콘별 인덱스를 병합 — 같은 키가 둘에 있으면 어간 목록을 이어 붙인다(둘 다 매칭).
+		const synonymIndex = new Map<string, string[][]>();
+		for (const lex of activeLexicons) {
+			let cached = this.synonymIndexes.get(lex.id);
+			if (!cached || cached.src !== lex.synonyms) {
+				cached = {
+					src: lex.synonyms,
+					index: await buildSynonymTokenIndex(lex.synonyms),
+				};
+				this.synonymIndexes.set(lex.id, cached);
+				if (gen !== this.refreshGen) return;
+			}
+			for (const [k, lists] of cached.index) {
+				const prev = synonymIndex.get(k);
+				synonymIndex.set(k, prev ? [...prev, ...lists] : lists);
+			}
+		}
 		const lexicons = loadSearchLexicons(db, lexiconIds);
 		const keys = await extractQueryKeysWithSynonyms(
 			ctx.text,
 			lexicons,
-			this.synonymIndex,
+			synonymIndex,
 		);
 		if (gen !== this.refreshGen) return;
 

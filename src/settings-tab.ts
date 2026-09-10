@@ -27,6 +27,7 @@ import {
 	GroupId,
 	FolderEntry,
 	parseDoctrineRaw,
+	Lexicon,
 	foldersFingerprint,
 	getActiveProfile,
 	makeProfileId,
@@ -44,7 +45,7 @@ import {
 	type LexiconProgress,
 } from "./embedder/embed-lexicon";
 import {
-	generateDoctrineSynonyms,
+	generateSynonyms,
 	type SynonymProgress,
 } from "./embedder/generate-synonyms";
 import {
@@ -110,14 +111,12 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 		this.renderGroup(containerEl, "external");
 		this.renderExcludedFolders(containerEl);
 
-		containerEl.createEl("h3", { text: "🔎 선택: 태그 검색 강화" });
+		containerEl.createEl("h3", { text: "📚 어휘 사전(렉시콘)" });
 		containerEl.createEl("p", {
-			text: "아래는 선택 사항입니다. 신학 분류로 태그 검색을 더 똑똑하게 만들고 싶을 때 ① → ② → ③ 순서로 설정하세요. 쓰지 않으면 건너뛰어도 검색은 됩니다.",
+			text: "선택 사항입니다. 분야별 키워드 사전을 등록하면 태그 검색이 키워드·동의어·의미가 가까운 키까지 잡아냅니다. 사전마다 ① 키워드 분석 → ② 동의어 생성 → ③ 키워드 임베딩 순서로 설정하세요. 어떤 테마가 어떤 사전을 쓸지는 위 ‘🎨 테마 프로파일’에서 고릅니다. 쓰지 않으면 건너뛰어도 검색은 됩니다.",
 			cls: "setting-item-description",
 		});
-		this.renderDoctrineKeywords(containerEl);
-		this.renderDoctrineSynonyms(containerEl);
-		this.renderDoctrineEmbedding(containerEl);
+		this.renderLexicons(containerEl);
 		this.renderTagEmbeddings(containerEl);
 		this.renderProtectedTerms(containerEl);
 
@@ -168,7 +167,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 			text: "[재색인 (변경분만)] 누르기 — 폴더를 정한 뒤 한 번 (필수)",
 		});
 		box.createEl("p", {
-			text: "※ 문장 의미로 찾는 ‘의미 검색’을 쓰려면 위 ‘🔑 OpenAI API 키’도 입력하세요(없으면 태그 검색만 됩니다). 태그·교리 검색을 더 정확하게 하려면 맨 아래 ‘선택: 태그 검색 강화’를 나중에 설정하세요.",
+			text: "※ 문장 의미로 찾는 ‘의미 검색’을 쓰려면 위 ‘🔑 OpenAI API 키’도 입력하세요(없으면 태그 검색만 됩니다). 태그 검색을 더 정확하게 하려면 아래 ‘📚 어휘 사전’을 나중에 설정하세요.",
 			cls: "setting-item-description",
 		});
 	}
@@ -222,12 +221,11 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 		const s = this.plugin.settings;
 		containerEl.createEl("h4", { text: "🔤 형태소 보호 단어" });
 		containerEl.createEl("p", {
-			text: "한국어 형태소 분석기가 핵심 단어를 잘못 쪼갤 때가 있습니다(예: '거룩해지는' → '해지'로 분해되어 '거룩'이 사라짐). 여기 등록된 단어는 본문에 나오면 항상 검색어로 살립니다. ① 교리 키워드와 ② 동의어는 자동으로 포함되고, 아래에 단어를 직접 더할 수 있습니다(줄바꿈 또는 쉼표 구분, 공백 없는 한 단어).",
+			text: "한국어 형태소 분석기가 핵심 단어를 잘못 쪼갤 때가 있습니다(예: '거룩해지는' → '해지'로 분해되어 '거룩'이 사라짐). 여기 등록된 단어는 본문에 나오면 항상 검색어로 살립니다. 어휘 사전의 키워드와 동의어는 자동으로 포함되고, 아래에 단어를 직접 더할 수 있습니다(줄바꿈 또는 쉼표 구분, 공백 없는 한 단어).",
 			cls: "setting-item-description",
 		});
 		const auto = deriveProtectedTerms({
-			doctrineKeywords: s.doctrineKeywords,
-			doctrineSynonyms: s.doctrineSynonyms,
+			lexicons: s.lexicons,
 			protectedTerms: [],
 		}).length;
 		const all = deriveProtectedTerms(s);
@@ -237,7 +235,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 		const renderCount = () => {
 			const total = deriveProtectedTerms(this.plugin.settings).length;
 			countEl.setText(
-				`자동 포함 ${auto}개(교리 키워드·동의어) + 직접 추가 ${this.plugin.settings.protectedTerms.length}개 = 보호 단어 ${total}개`,
+				`자동 포함 ${auto}개(어휘 사전 키워드·동의어) + 직접 추가 ${this.plugin.settings.protectedTerms.length}개 = 보호 단어 ${total}개`,
 			);
 		};
 		renderCount();
@@ -527,17 +525,90 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 			});
 	}
 
-	private renderDoctrineKeywords(containerEl: HTMLElement): void {
-		containerEl.createEl("h3", {
-			text: "✝️ ① 신학 분류 키워드 등록 (DOCTRINE)",
+	/** 📚 어휘 사전(렉시콘) — 사전마다 카드 하나(이름·매핑 필드·분야 + ①②③). */
+	private renderLexicons(containerEl: HTMLElement): void {
+		const s = this.plugin.settings;
+		if (s.lexicons.length === 0) {
+			containerEl.createEl("p", {
+				text: "등록된 어휘 사전이 없습니다. 예: 이름 ‘교리’ · 매핑 필드 ‘doctrine’ · 분야 ‘한국 기독교 신학’.",
+				cls: "setting-item-description",
+			});
+			return;
+		}
+		for (const lex of s.lexicons) this.renderLexiconCard(containerEl, lex);
+	}
+
+	private renderLexiconCard(containerEl: HTMLElement, lex: Lexicon): void {
+		const groupEl = containerEl.createDiv({
+			cls: "wr-group wr-group-lexicon",
 		});
+		const header = groupEl.createDiv({ cls: "wr-group-header" });
+		header.createSpan({ text: "📚", cls: "wr-group-icon" });
+		const titleEl = header.createSpan({ text: lex.name });
+
+		// 이름·매핑 필드·분야 — 입력마다 저장만 하고 display()는 부르지 않는다(포커스 유지).
+		new Setting(groupEl)
+			.setName("이름")
+			.setDesc("테마 설정과 검색 근거 표시에 쓰입니다.")
+			.addText((t) =>
+				t.setValue(lex.name).onChange(async (v) => {
+					const name = v.trim();
+					if (!name) return;
+					lex.name = name;
+					titleEl.setText(name);
+					await this.plugin.saveSettings();
+				}),
+			);
+		new Setting(groupEl)
+			.setName("매핑 필드")
+			.setDesc(
+				"노트 frontmatter에서 이 사전의 키를 읽을 필드(쉼표로 여러 개). ‘tags’를 넣으면 태그 중 키워드와 같은 것도 이 사전으로 칩니다. 바꾼 뒤엔 [재색인 (변경분만)]을 한 번 눌러주세요.",
+			)
+			.addText((t) =>
+				t
+					.setPlaceholder("doctrine")
+					.setValue(lex.fields.join(", "))
+					.onChange(async (v) => {
+						lex.fields = v
+							.split(",")
+							.map((f) => f.trim())
+							.filter((f) => f.length > 0);
+						await this.plugin.saveSettings();
+					}),
+			);
+		new Setting(groupEl)
+			.setName("분야")
+			.setDesc(
+				"② 동의어를 만들 때 AI에게 알려줄 분야입니다. 예: 한국 기독교 신학, AI 윤리·기술 철학",
+			)
+			.addText((t) =>
+				t
+					.setPlaceholder("한국 기독교 신학")
+					.setValue(lex.domain)
+					.onChange(async (v) => {
+						lex.domain = v.trim();
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		this.renderLexiconKeywords(groupEl, lex);
+		this.renderLexiconSynonyms(groupEl, lex);
+		this.renderLexiconEmbedding(groupEl, lex);
+		groupEl.createEl("p", {
+			text: "💡 매핑 필드나 키워드를 바꿨다면 [재색인 (변경분만)]을 한 번 눌러야 노트 매핑이 갱신됩니다(임베딩은 건드리지 않아 빠릅니다).",
+			cls: "setting-item-description",
+		});
+	}
+
+	private renderLexiconKeywords(containerEl: HTMLElement, lex: Lexicon): void {
+		containerEl.createEl("h4", { text: "✍️ ① 키워드 등록" });
 		containerEl.createEl("p", {
-			text: "본인의 DOCTRINE 분류 트리를 아래 박스에 붙여넣으세요. 위키링크 [[키워드]] 또는 큰따옴표 \"키워드\" 형식을 인식하고, 이모지 prefix(🔖 등)는 자동 제거됩니다. 태그 검색에서 의미적으로 가까운 키워드까지 매치하기 위한 어휘로 쓰입니다 (다음 단계에서 임베딩).",
+			text: "키워드 목록(분류 트리·목록 등)을 아래 박스에 붙여넣으세요. 위키링크 [[키워드]] 또는 큰따옴표 \"키워드\" 형식을 인식하고, 이모지 접두(🔖 등)는 자동 제거됩니다. 태그 검색에서 본문 표현과 가까운 키워드까지 매치하기 위한 어휘로 쓰입니다(③에서 임베딩).",
 			cls: "setting-item-description",
 		});
 
 		const ta = containerEl.createEl("textarea");
-		ta.value = this.plugin.settings.doctrineRaw;
+		ta.value = lex.raw;
 		ta.style.width = "100%";
 		ta.style.minHeight = "180px";
 		ta.style.fontFamily = "var(--font-monospace)";
@@ -545,7 +616,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 		ta.style.padding = "8px";
 		ta.style.marginBottom = "8px";
 
-		const kwCount = this.plugin.settings.doctrineKeywords.length;
+		const kwCount = lex.keywords.length;
 		const summary = containerEl.createEl("p", {
 			cls: "setting-item-description",
 		});
@@ -559,7 +630,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 			text: "키워드를 추가·수정·삭제하려면 위 글상자를 고치고 ‘분석’을 누르세요.",
 		});
 		containerEl.createEl("p", {
-			text: "💡 키워드를 바꿨다면: 아래 ‘① 키워드 분석’ → ‘② 동의어 생성’ → ‘③ 교리 키워드 임베딩’ 순서로 위에서 아래로 누르면 최신 상태가 됩니다.",
+			text: "💡 키워드를 바꿨다면: ‘① 키워드 분석’ → ‘② 동의어 생성’ → ‘③ 키워드 임베딩’ 순서로 위에서 아래로 누르면 최신 상태가 됩니다.",
 			cls: "setting-item-description",
 		});
 
@@ -569,125 +640,25 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 				.onClick(async () => {
 					const raw = ta.value;
 					const parsed = parseDoctrineRaw(raw);
-					this.plugin.settings.doctrineRaw = raw;
-					this.plugin.settings.doctrineKeywords = parsed;
+					lex.raw = raw;
+					lex.keywords = parsed;
 					await this.plugin.saveSettings();
 					new Notice(
-						`A4P Sermon Desk: ${parsed.length}개 키워드 인식됨`,
+						`A4P Sermon Desk: ‘${lex.name}’ 키워드 ${parsed.length}개 인식됨`,
 					);
 					this.display();
 				});
 		});
 	}
 
-	private renderDoctrineEmbedding(containerEl: HTMLElement): void {
-		containerEl.createEl("h3", {
-			text: "🧠 ③ 교리 키워드 임베딩",
-		});
+	private renderLexiconSynonyms(containerEl: HTMLElement, lex: Lexicon): void {
+		containerEl.createEl("h4", { text: "🔁 ② 동의어 자동 생성" });
 		containerEl.createEl("p", {
-			text: "①의 키워드와 ②의 동의어를 묶어 임베딩합니다. 검색 시 본문 표현이 키워드와 달라도 의미가 가까우면 해당 교리로 매치됩니다. 키워드나 동의어를 바꿨다면 다시 누르세요 — 실행할 때마다 전체를 새로 만듭니다.",
+			text: `등록한 키워드마다 본문에서 실제로 쓰이는 유사 표현을 AI(gpt-4o-mini)가 자동 생성합니다(분야: ${lex.domain || "일반"}). 예: '중생' → '거듭남, 새로 태어남'. 본문에 '거듭남'이라고 쓰면 '중생'으로 분류된 노트가 매치됩니다. (동의어는 본문 텍스트 매칭에 쓰이며, 키워드 임베딩과는 별개입니다.)`,
 			cls: "setting-item-description",
 		});
 
-		const card = this.renderEmbedCard(containerEl, "③ 교리 키워드 임베딩");
-		let embedBtn: ButtonComponent | null = null;
-		const computeCounts = () => {
-			const total = this.plugin.settings.doctrineKeywords.length;
-			const db = this.plugin.db;
-			const embedded = db
-				? getEmbeddedKeys(db, lexScope("doctrine"), EMBEDDING_MODEL).size
-				: 0;
-			const lastAt = db
-				? getMaxEmbeddedAt(db, lexScope("doctrine"), EMBEDDING_MODEL)
-				: 0;
-			return {
-				total,
-				embedded,
-				pending: Math.max(0, total - embedded),
-				db,
-				lastAt,
-			};
-		};
-		const updateStatus = () => {
-			const { total, embedded, pending, lastAt } = computeCounts();
-			if (total === 0) card.setState("empty", { done: 0, total: 0 });
-			else if (pending === 0)
-				card.setState("complete", { done: embedded, total }, lastAt);
-			else card.setState("pending", { done: embedded, total });
-		};
-		const refreshBtn = () => {
-			if (!embedBtn) return;
-			// 동의어 포함 임베딩이라 매번 전체 재생성 — pending과 무관하게 활성.
-			const { total, db } = computeCounts();
-			if (total === 0) {
-				embedBtn
-					.setButtonText("③ 임베딩 — 먼저 ① 키워드 분석")
-					.setDisabled(true);
-			} else {
-				embedBtn
-					.setButtonText("③ 교리 키워드 임베딩 (전체 갱신)")
-					.setDisabled(!db);
-			}
-		};
-		updateStatus();
-
-		new Setting(containerEl).addButton((btn: ButtonComponent) => {
-			embedBtn = btn;
-			refreshBtn();
-			btn.onClick(async () => {
-				const db = this.plugin.db;
-				if (!db) return;
-				const apiKey = this.plugin.settings.openaiApiKey;
-				btn.setDisabled(true);
-				try {
-					this.plugin.markDbDirty();
-					const res = await embedLexiconKeys(
-						db,
-						{
-							id: "doctrine",
-							keywords: this.plugin.settings.doctrineKeywords,
-							synonyms: this.plugin.settings.doctrineSynonyms,
-						},
-						apiKey,
-						(p: LexiconProgress) => {
-							btn.setButtonText(`임베딩 중 ${p.done}/${p.total}`);
-							card.setState("running", {
-								done: p.done,
-								total: p.total,
-							});
-						},
-					);
-					await this.plugin.persistDb();
-					new Notice(
-						`DOCTRINE 임베딩 완료: ${res.embedded}개 재생성`,
-					);
-				} catch (e) {
-					if (e instanceof MissingApiKeyError) {
-						new Notice(e.message);
-					} else {
-						console.error("[a4p-sermon-desk] doctrine embed", e);
-						new Notice(
-							`DOCTRINE 임베딩 실패: ${e instanceof Error ? e.message : String(e)}`,
-						);
-					}
-				} finally {
-					updateStatus();
-					refreshBtn();
-				}
-			});
-		});
-	}
-
-	private renderDoctrineSynonyms(containerEl: HTMLElement): void {
-		containerEl.createEl("h3", {
-			text: "🔁 ② 동의어 자동 생성",
-		});
-		containerEl.createEl("p", {
-			text: "등록한 신학 분류 키워드마다 본문에서 실제로 쓰이는 유사 표현을 AI(gpt-4o-mini)가 자동 생성합니다. 예: '중생' → '거듭남, 새로 태어남'. 본문에 '거듭남'이라고 쓰면 '중생'으로 분류된 노트가 매치됩니다. (동의어는 본문 텍스트 매칭에 쓰이며, 키워드 임베딩과는 별개입니다.)",
-			cls: "setting-item-description",
-		});
-
-		const synAll = this.plugin.settings.doctrineSynonyms;
+		const synAll = lex.synonyms;
 		const synKeyN = Object.values(synAll).filter((a) => a.length > 0).length;
 		const synTotal = Object.values(synAll).reduce(
 			(a, arr) => a + arr.length,
@@ -706,10 +677,9 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 		const card = this.renderEmbedCard(containerEl, "② 동의어 생성");
 		let genBtn: ButtonComponent | null = null;
 		const computeCounts = () => {
-			const total = this.plugin.settings.doctrineKeywords.length;
-			const syn = this.plugin.settings.doctrineSynonyms;
-			const done = this.plugin.settings.doctrineKeywords.filter(
-				(k) => (syn[k]?.length ?? 0) > 0,
+			const total = lex.keywords.length;
+			const done = lex.keywords.filter(
+				(k) => (lex.synonyms[k]?.length ?? 0) > 0,
 			).length;
 			return { total, done, pending: Math.max(0, total - done) };
 		};
@@ -747,10 +717,11 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 				const startDone = computeCounts().done;
 				btn.setDisabled(true);
 				try {
-					const result = await generateDoctrineSynonyms(
-						this.plugin.settings.doctrineKeywords,
+					const result = await generateSynonyms(
+						lex.keywords,
 						apiKey,
-						this.plugin.settings.doctrineSynonyms,
+						lex.synonyms,
+						lex.domain,
 						(p: SynonymProgress) => {
 							btn.setButtonText(`생성 중 ${p.done}/${p.total}`);
 							card.setState("running", {
@@ -759,7 +730,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 							});
 						},
 					);
-					this.plugin.settings.doctrineSynonyms = result;
+					lex.synonyms = result;
 					await this.plugin.saveSettings();
 					const count = Object.keys(result).length;
 					const words = Object.values(result).reduce(
@@ -767,7 +738,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 						0,
 					);
 					new Notice(
-						`동의어 생성 완료: ${count}개 키워드에 총 ${words}개 동의어 등록됨`,
+						`‘${lex.name}’ 동의어 생성 완료: ${count}개 키워드에 총 ${words}개 동의어 등록됨`,
 					);
 					this.display();
 				} catch (e) {
@@ -787,10 +758,102 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 		});
 	}
 
-	private renderTagEmbeddings(containerEl: HTMLElement): void {
-		containerEl.createEl("h3", { text: "🏷️ 볼트 태그 임베딩 (DOCTRINE과 별개)" });
+	private renderLexiconEmbedding(containerEl: HTMLElement, lex: Lexicon): void {
+		containerEl.createEl("h4", { text: "🧠 ③ 키워드 임베딩" });
 		containerEl.createEl("p", {
-			text: "노트의 #태그·태그 위키링크를 임베딩해 검색 시 의미가 가까운 태그까지 매치합니다. 위 ①②③(교리 키워드)와 무관하게 독립적으로 쓸 수 있습니다. 노트에 새 태그를 달고 ‘재색인’을 하면 아래 ‘대기 N개’가 늘어납니다 — 그때 이 버튼을 누르세요.",
+			text: "①의 키워드와 ②의 동의어를 묶어 임베딩합니다. 검색 시 본문 표현이 키워드와 달라도 의미가 가까우면 해당 키워드로 매치됩니다. 키워드나 동의어를 바꿨다면 다시 누르세요 — 실행할 때마다 전체를 새로 만듭니다.",
+			cls: "setting-item-description",
+		});
+
+		const card = this.renderEmbedCard(containerEl, "③ 키워드 임베딩");
+		let embedBtn: ButtonComponent | null = null;
+		const computeCounts = () => {
+			const total = lex.keywords.length;
+			const db = this.plugin.db;
+			const embedded = db
+				? getEmbeddedKeys(db, lexScope(lex.id), EMBEDDING_MODEL).size
+				: 0;
+			const lastAt = db
+				? getMaxEmbeddedAt(db, lexScope(lex.id), EMBEDDING_MODEL)
+				: 0;
+			return {
+				total,
+				embedded,
+				pending: Math.max(0, total - embedded),
+				db,
+				lastAt,
+			};
+		};
+		const updateStatus = () => {
+			const { total, embedded, pending, lastAt } = computeCounts();
+			if (total === 0) card.setState("empty", { done: 0, total: 0 });
+			else if (pending === 0)
+				card.setState("complete", { done: embedded, total }, lastAt);
+			else card.setState("pending", { done: embedded, total });
+		};
+		const refreshBtn = () => {
+			if (!embedBtn) return;
+			// 동의어 포함 임베딩이라 매번 전체 재생성 — pending과 무관하게 활성.
+			const { total, db } = computeCounts();
+			if (total === 0) {
+				embedBtn
+					.setButtonText("③ 임베딩 — 먼저 ① 키워드 분석")
+					.setDisabled(true);
+			} else {
+				embedBtn
+					.setButtonText("③ 키워드 임베딩 (전체 갱신)")
+					.setDisabled(!db);
+			}
+		};
+		updateStatus();
+
+		new Setting(containerEl).addButton((btn: ButtonComponent) => {
+			embedBtn = btn;
+			refreshBtn();
+			btn.onClick(async () => {
+				const db = this.plugin.db;
+				if (!db) return;
+				const apiKey = this.plugin.settings.openaiApiKey;
+				btn.setDisabled(true);
+				try {
+					this.plugin.markDbDirty();
+					const res = await embedLexiconKeys(
+						db,
+						lex,
+						apiKey,
+						(p: LexiconProgress) => {
+							btn.setButtonText(`임베딩 중 ${p.done}/${p.total}`);
+							card.setState("running", {
+								done: p.done,
+								total: p.total,
+							});
+						},
+					);
+					await this.plugin.persistDb();
+					new Notice(
+						`‘${lex.name}’ 임베딩 완료: ${res.embedded}개 재생성`,
+					);
+				} catch (e) {
+					if (e instanceof MissingApiKeyError) {
+						new Notice(e.message);
+					} else {
+						console.error("[a4p-sermon-desk] lexicon embed", e);
+						new Notice(
+							`임베딩 실패: ${e instanceof Error ? e.message : String(e)}`,
+						);
+					}
+				} finally {
+					updateStatus();
+					refreshBtn();
+				}
+			});
+		});
+	}
+
+	private renderTagEmbeddings(containerEl: HTMLElement): void {
+		containerEl.createEl("h3", { text: "🏷️ 볼트 태그 임베딩 (어휘 사전과 별개)" });
+		containerEl.createEl("p", {
+			text: "노트의 #태그·태그 위키링크를 임베딩해 검색 시 의미가 가까운 태그까지 매치합니다. 위 어휘 사전과 무관하게 독립적으로 쓸 수 있습니다. 노트에 새 태그를 달고 ‘재색인’을 하면 아래 ‘대기 N개’가 늘어납니다 — 그때 이 버튼을 누르세요.",
 			cls: "setting-item-description",
 		});
 
@@ -1090,6 +1153,8 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 						id,
 						name,
 						weights: { ...src.weights },
+						lexiconIds: [...src.lexiconIds],
+						chatRole: src.chatRole,
 					});
 					s.activeProfileId = id; // 만든 테마를 바로 편집하도록 전환
 					nameComp.setValue("");
@@ -1324,7 +1389,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("폴더 설정 초기화")
 			.setDesc(
-				"검색 대상 폴더·테마별 가중치·제외 폴더만 기본값으로 되돌립니다. API 키, 교리 키워드·동의어, 채팅·삽입·표시 설정은 그대로 둡니다. 되돌린 뒤 폴더를 다시 추가하고 [재색인 (변경분만)]을 눌러주세요.",
+				"검색 대상 폴더·테마별 가중치·제외 폴더만 기본값으로 되돌립니다. API 키, 어휘 사전(키워드·동의어), 채팅·삽입·표시 설정은 그대로 둡니다. 되돌린 뒤 폴더를 다시 추가하고 [재색인 (변경분만)]을 눌러주세요.",
 			)
 			.addButton((btn: ButtonComponent) => {
 				btn.setButtonText("초기화")
@@ -1332,7 +1397,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 					.onClick(async () => {
 						const ok = await confirmModal(this.app, {
 							title: "폴더 설정을 초기화할까요?",
-							body: `검색 대상 폴더 ${this.plugin.settings.folders.length}개와 테마 ${this.plugin.settings.profiles.length}개의 가중치, 제외 폴더 목록이 지워집니다. API 키·교리 키워드·동의어는 유지됩니다. 이 동작은 되돌릴 수 없습니다.`,
+							body: `검색 대상 폴더 ${this.plugin.settings.folders.length}개와 테마 ${this.plugin.settings.profiles.length}개의 가중치, 제외 폴더 목록이 지워집니다. API 키·어휘 사전은 유지됩니다. 이 동작은 되돌릴 수 없습니다.`,
 							confirmText: "초기화",
 							warning: true,
 						});

@@ -1,6 +1,10 @@
 import { App, TFile } from "obsidian";
 import type { Database } from "sql.js";
-import { type WeightedRecallSettings, foldersFingerprint } from "../settings";
+import {
+	type WeightedRecallSettings,
+	foldersFingerprint,
+	lexiconIndexFingerprint,
+} from "../settings";
 import { scanVault, reapplyFolderSettings, type NoteRecord } from "./scanner";
 import {
 	getMeta,
@@ -13,7 +17,7 @@ import {
 import { parseFile } from "./parser";
 import { chunkBody } from "./chunker";
 import { tokenize } from "../morpheme";
-import { normalizeTag } from "../search/tag";
+import { toIndexLexicons } from "./note-keys";
 
 /**
  * 토큰화/색인 알고리즘 버전 — heading 포함(0.2.0) + NFC 정규화(0.3.0) = 2.
@@ -92,19 +96,16 @@ export async function runIndex(
 	const records = scanVault(app, settings);
 	const now = Date.now();
 
-	const doctrineLexicon = new Set(
-		settings.doctrineKeywords
-			.map((k) => normalizeTag(k))
-			.filter((k) => k.length > 0),
-	);
-	const doctrineFp = [...doctrineLexicon].sort().join("|");
+	// 어휘 사전(렉시콘) — 노트 ↔ 키 매핑용. 지문은 id·매핑 필드·정규화 키워드만(동의어 제외).
+	const indexLexicons = toIndexLexicons(settings.lexicons);
+	const lexiconFp = lexiconIndexFingerprint(settings);
 
 	// 알고리즘 버전 불일치(첫 실행·업그레이드 포함)면 전체 재색인 강제.
 	const full =
 		options.force === true ||
 		getMeta(db, ALGO_VERSION_KEY) !== String(INDEX_ALGO_VERSION);
 	const lexiconChanged =
-		!full && getMeta(db, DOCTRINE_FP_KEY) !== doctrineFp;
+		!full && getMeta(db, DOCTRINE_FP_KEY) !== lexiconFp;
 
 	// 기존 색인과 diff — 신규/변경만 다시 읽고, 사라진 노트는 정리한다.
 	// rename은 구경로 removed + 신경로 added로, 폴더 스코프 변경은 scan 결과
@@ -204,11 +205,11 @@ export async function runIndex(
 			]);
 
 			let t = performance.now();
-			const parsed = await parseFile(app, file, doctrineLexicon);
+			const parsed = await parseFile(app, file, indexLexicons);
 			timings.parseMs += performance.now() - t;
 
-			for (const dk of parsed.doctrineKeys) {
-				insertNoteLexiconKey.run([rec.path, "doctrine", dk]);
+			for (const { lexiconId, key } of parsed.lexiconKeys) {
+				insertNoteLexiconKey.run([rec.path, lexiconId, key]);
 			}
 			for (const tk of parsed.tagKeys) {
 				insertNoteTag.run([rec.path, tk]);
@@ -277,11 +278,11 @@ export async function runIndex(
 					const rec = unchangedRecs[i];
 					const file = app.vault.getAbstractFileByPath(rec.path);
 					if (!(file instanceof TFile)) continue;
-					const parsed = await parseFile(app, file, doctrineLexicon);
+					const parsed = await parseFile(app, file, indexLexicons);
 					delDoc.run([rec.path]);
 					delTag.run([rec.path]);
-					for (const dk of parsed.doctrineKeys) {
-						insertNoteLexiconKey.run([rec.path, "doctrine", dk]);
+					for (const { lexiconId, key } of parsed.lexiconKeys) {
+						insertNoteLexiconKey.run([rec.path, lexiconId, key]);
 					}
 					for (const tk of parsed.tagKeys) {
 						insertNoteTag.run([rec.path, tk]);
@@ -300,7 +301,7 @@ export async function runIndex(
 
 		// COMMIT과 함께 원자적으로 기록 — 중단 시 다음 실행이 다시 판정한다.
 		setMeta(db, ALGO_VERSION_KEY, String(INDEX_ALGO_VERSION));
-		setMeta(db, DOCTRINE_FP_KEY, doctrineFp);
+		setMeta(db, DOCTRINE_FP_KEY, lexiconFp);
 		if (full && options.protectedFp !== undefined) {
 			setMeta(db, PROTECTED_FP_KEY, options.protectedFp);
 		}

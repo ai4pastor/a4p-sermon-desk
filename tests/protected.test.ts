@@ -33,12 +33,12 @@ describe("normalizeProtectedTerm / parseProtectedInput", () => {
 
 describe("deriveProtectedTerms", () => {
 	it("교리 키워드 ∪ 동의어(단어형) ∪ 직접 추가, 구 형태 동의어는 제외", () => {
+		// 두 어휘 사전의 합집합 — 렉시콘이 몇 개든 chunk_terms는 하나(색인·쿼리 공통).
 		const terms = deriveProtectedTerms({
-			doctrineKeywords: ["칭의", "성화", "주"],
-			doctrineSynonyms: {
-				성화: ["거룩", "거룩해짐", "거룩한 삶"],
-				칭의: ["의롭다 하심", "의롭"],
-			},
+			lexicons: [
+				{ keywords: ["칭의", "주"], synonyms: { 칭의: ["의롭다 하심", "의롭"] } },
+				{ keywords: ["성화"], synonyms: { 성화: ["거룩", "거룩해짐", "거룩한 삶"] } },
+			],
 			protectedTerms: ["회개", "칭의"],
 		});
 		expect(terms).toEqual(["거룩", "거룩해짐", "성화", "의롭", "칭의", "회개"]);

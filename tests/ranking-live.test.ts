@@ -80,6 +80,8 @@ const appStub = {} as unknown as App;
 let db: Database | null = null;
 let lexicons: SearchLexicons | null = null;
 let synonymIndex: Map<string, string[][]> = new Map();
+/** data.json의 렉시콘 id(v4) — 없으면 v3 백필과 같은 "doctrine". */
+let liveLexiconIds: string[] = ["doctrine"];
 const tokensByQuery = new Map<string, string[]>();
 const embByQuery = new Map<string, Float32Array>();
 const keysByQuery = new Map<string, QueryKeys>();
@@ -154,28 +156,50 @@ describe.skipIf(!LIVE_DB)("실측 하니스 (실제 index.db 사본)", () => {
 		report.push(
 			`[렉시콘] 키 임베딩 ${embRows.map((r) => `${r[0]}=${r[1]}`).join(" · ") || "없음"} / 노트 매핑 ${lexRows.map((r) => `${r[0]}: ${r[1]}행·${r[2]}키`).join(" · ") || "없음"}`,
 		);
-		lexicons = loadSearchLexicons(db, ["doctrine"]);
-
 		let protectedCount = 0;
 		if (DATA_JSON) {
-			// doctrine 관련 필드만 사용. 다른 내용(API 키 등)은 읽지도 출력하지도 않는다.
+			// 렉시콘(v4) 또는 doctrine*(v3 이하)·보호 단어 필드만 사용. 다른 내용(API 키 등)은 읽지도 출력하지도 않는다.
 			const raw = JSON.parse(fs.readFileSync(DATA_JSON, "utf8")) as {
+				lexicons?: {
+					id: string;
+					keywords?: string[];
+					synonyms?: Record<string, string[]>;
+				}[];
 				doctrineSynonyms?: Record<string, string[]>;
 				doctrineKeywords?: string[];
 				protectedTerms?: string[];
 			};
-			synonymIndex = await buildSynonymTokenIndex(
-				raw.doctrineSynonyms ?? {},
-			);
+			const lexes =
+				Array.isArray(raw.lexicons) && raw.lexicons.length > 0
+					? raw.lexicons.map((l) => ({
+							id: l.id,
+							keywords: l.keywords ?? [],
+							synonyms: l.synonyms ?? {},
+						}))
+					: [
+							{
+								id: "doctrine",
+								keywords: raw.doctrineKeywords ?? [],
+								synonyms: raw.doctrineSynonyms ?? {},
+							},
+						];
+			liveLexiconIds = lexes.map((l) => l.id);
+			synonymIndex = new Map();
+			for (const l of lexes) {
+				for (const [k, lists] of await buildSynonymTokenIndex(l.synonyms)) {
+					const prev = synonymIndex.get(k);
+					synonymIndex.set(k, prev ? [...prev, ...lists] : lists);
+				}
+			}
 			// 0.8.0 보호 단어 — 실제 앱과 같은 도출 규칙으로 쿼리 토큰에 적용.
 			const prot = deriveProtectedTerms({
-				doctrineKeywords: raw.doctrineKeywords ?? [],
-				doctrineSynonyms: raw.doctrineSynonyms ?? {},
+				lexicons: lexes,
 				protectedTerms: raw.protectedTerms ?? [],
 			});
 			setProtectedForTests(prot);
 			protectedCount = prot.length;
 		}
+		lexicons = loadSearchLexicons(db, liveLexiconIds);
 
 		for (const q of QUERIES) {
 			tokensByQuery.set(q.id, await tokenizeReal(q.text));
@@ -466,11 +490,12 @@ describe.skipIf(!LIVE_DB)("실측 하니스 (실제 index.db 사본)", () => {
 			expect(vec, "쿼리 임베딩 없음").toBeDefined();
 			if (!vec) return;
 			const keys = keysByQuery.get("vec-discovery")!;
-			const dEmb = loadAllKeyEmbeddings(
-				db,
-				lexScope("doctrine"),
-				EMBEDDING_MODEL,
-			);
+			const dEmb = new Map<string, Float32Array>();
+			for (const id of liveLexiconIds) {
+				for (const [k, v] of loadAllKeyEmbeddings(db, lexScope(id), EMBEDDING_MODEL)) {
+					dEmb.set(k, v);
+				}
+			}
 			const tEmb = loadAllKeyEmbeddings(
 				db,
 				TAG_SCOPE,

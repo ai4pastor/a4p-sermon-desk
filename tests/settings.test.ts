@@ -23,6 +23,11 @@ import {
 	makeWeightResolver,
 	mirrorActiveWeights,
 	foldersFingerprint,
+	getActiveLexicons,
+	lexiconIndexFingerprint,
+	DEFAULT_CHAT_ROLE_SERMON,
+	DEFAULT_CHAT_ROLE_RESEARCH,
+	SETTINGS_VERSION,
 	type WeightedRecallSettings,
 } from "../src/settings";
 
@@ -582,5 +587,126 @@ describe("테마 프로파일 — scope 지문", () => {
 			}),
 		);
 		expect(foldersFingerprint(s)).toBe(foldersFingerprint(solo));
+	});
+});
+
+describe("어휘 사전(렉시콘) — v3→v4 백필·정제", () => {
+	const legacyDoctrine = {
+		doctrineRaw: "- [[칭의]]\n- [[성화]]",
+		doctrineKeywords: ["칭의", "성화"],
+		doctrineSynonyms: { 성화: ["거룩해짐", "거룩한삶"], 칭의: ["의롭다 하심"] },
+	};
+	const v3 = {
+		...DEFAULT_SETTINGS,
+		folders: [{ path: "A/", groupId: "internal", weight: 5 }],
+		profiles: [
+			{ id: "default", name: "설교", weights: { "A/": 5 } },
+			{ id: "research", name: "연구", weights: { "A/": 8 } },
+		],
+		...legacyDoctrine,
+	} as unknown as WeightedRecallSettings;
+
+	it("(a) v3 교리 필드 → id 'doctrine' 렉시콘 1개, 값 무손실, 전 프로파일 바인딩, 기본 채팅 역할", () => {
+		const out = normalizeSettings(v3);
+		expect(out.settingsVersion).toBe(SETTINGS_VERSION);
+		expect(out.lexicons).toEqual([
+			{
+				id: "doctrine",
+				name: "교리",
+				fields: ["doctrine"],
+				domain: "한국 기독교 신학",
+				raw: legacyDoctrine.doctrineRaw,
+				keywords: legacyDoctrine.doctrineKeywords,
+				synonyms: legacyDoctrine.doctrineSynonyms,
+			},
+		]);
+		expect((out as unknown as Record<string, unknown>).doctrineKeywords).toBeUndefined();
+		for (const p of out.profiles) expect(p.lexiconIds).toEqual(["doctrine"]);
+		expect(out.profiles.find((p) => p.id === "default")?.chatRole).toBe(DEFAULT_CHAT_ROLE_SERMON);
+		expect(out.profiles.find((p) => p.id === "research")?.chatRole).toBe(DEFAULT_CHAT_ROLE_RESEARCH);
+		// 재정규화해도 동일(멱등)
+		expect(normalizeSettings(out)).toEqual(out);
+	});
+
+	it("(a') profiles까지 없는 v2 데이터도 백필 프로파일 2개가 렉시콘을 받는다", () => {
+		const out = normalizeSettings({ ...v3, profiles: [] } as WeightedRecallSettings);
+		expect(out.profiles.map((p) => [p.id, p.lexiconIds, p.chatRole])).toEqual([
+			["default", ["doctrine"], DEFAULT_CHAT_ROLE_SERMON],
+			["research", ["doctrine"], DEFAULT_CHAT_ROLE_RESEARCH],
+		]);
+	});
+
+	it("(b) v4: 없는 id 제거·중복 제거, 빈 배열 유지, 사용자 chatRole 유지, lexiconIds 없으면 전 렉시콘", () => {
+		const out = normalizeSettings({
+			...DEFAULT_SETTINGS,
+			lexicons: [
+				{ id: "doctrine", name: "교리", fields: ["doctrine"], domain: "신학", raw: "", keywords: ["칭의"], synonyms: {} },
+				{ id: "concept", name: "", fields: [" concept ", "tags", "concept"], domain: " AI 윤리 ", raw: "", keywords: [" 정렬", "정렬", ""], synonyms: { 정렬: ["얼라인먼트", "x"] } },
+				{ id: "concept", name: "중복", fields: [], domain: "", raw: "", keywords: [], synonyms: {} },
+			],
+			profiles: [
+				{ id: "p1", name: "a", weights: {}, lexiconIds: ["concept", "없는id", "concept"], chatRole: "  나만의 조수 " },
+				{ id: "p2", name: "b", weights: {}, lexiconIds: [], chatRole: "" },
+				{ id: "p3", name: "c", weights: {} },
+			],
+		} as unknown as WeightedRecallSettings);
+		expect(out.lexicons.map((l) => l.id)).toEqual(["doctrine", "concept"]);
+		const concept = out.lexicons[1];
+		expect(concept.name).toBe("어휘 사전 2");
+		expect(concept.fields).toEqual(["concept", "tags"]);
+		expect(concept.domain).toBe("AI 윤리");
+		expect(concept.keywords).toEqual(["정렬"]);
+		expect(concept.synonyms).toEqual({ 정렬: ["얼라인먼트"] });
+		expect(out.profiles[0].lexiconIds).toEqual(["concept"]);
+		expect(out.profiles[0].chatRole).toBe("나만의 조수");
+		expect(out.profiles[1].lexiconIds).toEqual([]);
+		expect(out.profiles[1].chatRole).toBe(DEFAULT_CHAT_ROLE_SERMON);
+		expect(out.profiles[2].lexiconIds).toEqual(["doctrine", "concept"]);
+	});
+
+	it("(c) 렉시콘도 교리 필드도 없으면 [] 이고 프로파일 lexiconIds도 []", () => {
+		const out = normalizeSettings({ ...DEFAULT_SETTINGS } as WeightedRecallSettings);
+		expect(out.lexicons).toEqual([]);
+		for (const p of out.profiles) expect(p.lexiconIds).toEqual([]);
+	});
+
+	it("(d) getActiveLexicons는 활성 프로파일의 lexiconIds 순서로 돌려준다", () => {
+		const out = normalizeSettings({
+			...DEFAULT_SETTINGS,
+			lexicons: [
+				{ id: "doctrine", name: "교리", fields: ["doctrine"], domain: "", raw: "", keywords: [], synonyms: {} },
+				{ id: "concept", name: "개념", fields: ["concept"], domain: "", raw: "", keywords: [], synonyms: {} },
+			],
+			profiles: [{ id: "r", name: "연구", weights: {}, lexiconIds: ["concept", "doctrine"], chatRole: "x" }],
+			activeProfileId: "r",
+		} as unknown as WeightedRecallSettings);
+		expect(getActiveLexicons(out).map((l) => l.name)).toEqual(["개념", "교리"]);
+		expect(getActiveLexicons({ ...out, profiles: [{ ...out.profiles[0], lexiconIds: [] }] }).length).toBe(0);
+	});
+
+	it("(e) lexiconIndexFingerprint — 동의어·raw·이름·분야·키워드 순서·NFC·렉시콘 순서는 불변, 필드·키워드 변경은 변함", () => {
+		const base = normalizeSettings({
+			...DEFAULT_SETTINGS,
+			lexicons: [
+				{ id: "a", name: "A", fields: ["doctrine"], domain: "d", raw: "r", keywords: ["칭의", "성화"], synonyms: { 성화: ["거룩"] } },
+				{ id: "b", name: "B", fields: ["concept", "tags"], domain: "", raw: "", keywords: ["정렬"], synonyms: {} },
+			],
+		} as unknown as WeightedRecallSettings);
+		const fp = lexiconIndexFingerprint(base);
+		const withLex = (patch: (l: WeightedRecallSettings["lexicons"]) => WeightedRecallSettings["lexicons"]) =>
+			lexiconIndexFingerprint({ ...base, lexicons: patch(base.lexicons.map((l) => ({ ...l, fields: [...l.fields], keywords: [...l.keywords], synonyms: { ...l.synonyms } }))) });
+		expect(withLex((ls) => { ls[0].synonyms = {}; ls[0].raw = "다른"; ls[0].name = "다른"; ls[0].domain = "다른"; return ls; })).toBe(fp);
+		expect(withLex((ls) => { ls[0].keywords = ["성화".normalize("NFD"), "✝️ 칭의"]; return ls; })).toBe(fp);
+		expect(withLex((ls) => [ls[1], ls[0]])).toBe(fp);
+		expect(withLex((ls) => { ls[0].fields = ["doctrine", "tags"]; return ls; })).not.toBe(fp);
+		expect(withLex((ls) => { ls[1].keywords = ["정렬", "편향"]; return ls; })).not.toBe(fp);
+		expect(withLex(() => [])).toBe("");
+	});
+
+	it("(f) getActiveProfile 폴백은 전 렉시콘 id와 설교 채팅 역할", () => {
+		const out = normalizeSettings(v3);
+		const fb = getActiveProfile({ ...out, profiles: [], activeProfileId: "x" });
+		expect(fb.lexiconIds).toEqual(["doctrine"]);
+		expect(fb.chatRole).toBe(DEFAULT_CHAT_ROLE_SERMON);
 	});
 });

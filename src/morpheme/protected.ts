@@ -10,8 +10,11 @@ const HANGUL_RE = /[ㄱ-ㆎ가-힣]/;
 const EMOJI_RE = /[\p{Extended_Pictographic}️]/gu;
 
 export interface ProtectedSource {
-	doctrineKeywords: readonly string[];
-	doctrineSynonyms: Readonly<Record<string, readonly string[]>>;
+	/** 어휘 사전들 — 키워드·동의어(단어형)를 전부 합집합으로(색인·쿼리 공통 chunk_terms). */
+	lexicons: ReadonlyArray<{
+		keywords: readonly string[];
+		synonyms: Readonly<Record<string, readonly string[]>>;
+	}>;
 	protectedTerms: readonly string[];
 }
 
@@ -40,16 +43,18 @@ export function parseProtectedInput(text: string): string[] {
 	return [...out].sort();
 }
 
-/** 교리 키워드 ∪ 동의어(단어형) ∪ 직접 추가 — 정규화·중복 제거·정렬. */
+/** 전 어휘 사전의 키워드 ∪ 동의어(단어형) ∪ 직접 추가 — 정규화·중복 제거·정렬. */
 export function deriveProtectedTerms(src: ProtectedSource): string[] {
 	const out = new Set<string>();
 	const add = (raw: string) => {
 		const t = normalizeProtectedTerm(raw);
 		if (t) out.add(t);
 	};
-	for (const k of src.doctrineKeywords) add(k);
-	for (const list of Object.values(src.doctrineSynonyms)) {
-		for (const s of list) add(s);
+	for (const lex of src.lexicons) {
+		for (const k of lex.keywords) add(k);
+		for (const list of Object.values(lex.synonyms)) {
+			for (const s of list) add(s);
+		}
 	}
 	for (const p of src.protectedTerms) add(p);
 	return [...out].sort();

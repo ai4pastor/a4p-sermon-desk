@@ -1,11 +1,12 @@
 import { App, TFile, getAllTags } from "obsidian";
-import { addLinkVariants, normalizeTag } from "../search/tag";
+import { deriveNoteKeys, type IndexLexicon } from "./note-keys";
 
 export interface ParsedNote {
 	frontmatter: Record<string, unknown>;
 	body: string;
+	/** getAllTags — [태그: …] 청크 접두용(키 매핑과 별개). */
 	tags: string[];
-	doctrineKeys: string[];
+	lexiconKeys: { lexiconId: string; key: string }[];
 	tagKeys: string[];
 }
 
@@ -15,10 +16,11 @@ export function stripFrontmatter(content: string): string {
 	return content.replace(FRONTMATTER_RE, "");
 }
 
+/** metadataCache에서 입력을 만들어 순수 함수 deriveNoteKeys에 넘기는 얇은 래퍼. */
 export async function parseFile(
 	app: App,
 	file: TFile,
-	doctrineLexicon: Set<string>,
+	lexicons: IndexLexicon[],
 ): Promise<ParsedNote> {
 	const content = await app.vault.cachedRead(file);
 	const cache = app.metadataCache.getFileCache(file);
@@ -28,66 +30,27 @@ export async function parseFile(
 	const tags = Array.from(
 		new Set(rawTags.map((t) => t.replace(/^#/, "").trim()).filter(Boolean)),
 	);
-
-	const doctrineSet = new Set<string>();
-	const tagSet = new Set<string>();
-
-	const fmDoctrine = frontmatter.doctrine;
-	if (fmDoctrine) {
-		const vals = Array.isArray(fmDoctrine) ? fmDoctrine : [fmDoctrine];
-		for (const v of vals) {
-			if (typeof v === "string" && v.trim()) {
-				addLinkVariants(doctrineSet, v);
-			}
-		}
-	}
-	const fmTags = frontmatter.tags;
-	if (fmTags) {
-		const vals = Array.isArray(fmTags)
-			? fmTags
-			: typeof fmTags === "string"
-				? fmTags.split(",")
-				: [];
-		for (const v of vals) {
-			if (typeof v === "string" && v.trim()) {
-				addLinkVariants(tagSet, v);
-			}
-		}
-	}
-	if (cache?.tags) {
-		for (const t of cache.tags) {
-			const n = normalizeTag(t.tag);
-			if (n) tagSet.add(n);
-		}
-	}
-	if (cache?.links) {
-		for (const l of cache.links) {
-			const tmp = new Set<string>();
-			addLinkVariants(tmp, l.link);
-			for (const k of tmp) {
-				if (doctrineLexicon.has(k)) doctrineSet.add(k);
-				else tagSet.add(k);
-			}
-		}
-	}
-	const fmLinks = (
-		cache as { frontmatterLinks?: Array<{ key: string; link: string }> } | null
-	)?.frontmatterLinks;
-	if (fmLinks) {
-		for (const l of fmLinks) {
-			const fieldRoot = l.key.split(".")[0];
-			if (fieldRoot === "doctrine") addLinkVariants(doctrineSet, l.link);
-			else if (fieldRoot === "tags") addLinkVariants(tagSet, l.link);
-		}
-	}
-
-	for (const k of doctrineSet) tagSet.delete(k);
+	const fmLinks =
+		(
+			cache as {
+				frontmatterLinks?: Array<{ key: string; link: string }>;
+			} | null
+		)?.frontmatterLinks ?? [];
+	const keys = deriveNoteKeys(
+		{
+			frontmatter,
+			inlineTags: (cache?.tags ?? []).map((t) => t.tag),
+			links: (cache?.links ?? []).map((l) => l.link),
+			frontmatterLinks: fmLinks.map((l) => ({ key: l.key, link: l.link })),
+		},
+		lexicons,
+	);
 
 	return {
 		frontmatter,
 		body,
 		tags,
-		doctrineKeys: [...doctrineSet],
-		tagKeys: [...tagSet],
+		lexiconKeys: keys.lexiconKeys,
+		tagKeys: keys.tagKeys,
 	};
 }

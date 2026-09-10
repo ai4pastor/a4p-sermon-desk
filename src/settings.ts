@@ -1,3 +1,5 @@
+import { normalizeTag } from "./search/tag-normalize";
+
 export type GroupId = "internal" | "external";
 
 export type SearchMode = "semantic" | "tag";
@@ -57,6 +59,41 @@ export interface WeightProfile {
 	name: string;
 	/** 폴더 path → 0~10 정수. normalizeSettings가 folders 전체 커버를 보장. */
 	weights: Record<string, number>;
+	/** 이 테마의 태그 검색이 쓰는 어휘 사전 id(순서 = 병합 순서). 빈 배열 = 태그 전용. */
+	lexiconIds: string[];
+	/** 채팅 시스템 프롬프트 첫 문장의 역할 — "당신은 ${chatRole}입니다." */
+	chatRole: string;
+}
+
+/**
+ * 이름 있는 어휘 사전(렉시콘) — 태그 검색의 키워드 매칭·동의어·키 임베딩 단위.
+ * v3 이하의 전역 '교리(DOCTRINE)' 설정은 id "doctrine" 렉시콘으로 무손실 백필된다.
+ */
+export interface Lexicon {
+	id: string;
+	name: string;
+	/** 매핑할 frontmatter 필드. "tags"를 넣으면 태그 중 keywords와 일치하는 것만 승격(태그 폴백). */
+	fields: string[];
+	/** 동의어 생성 AI에게 알려줄 분야. 예 "한국 기독교 신학" / "AI 윤리·기술 철학" */
+	domain: string;
+	/** 사용자가 붙여넣은 키워드 원문(재분석용). */
+	raw: string;
+	keywords: string[];
+	synonyms: Record<string, string[]>;
+}
+
+export const DEFAULT_CHAT_ROLE_SERMON =
+	"한국 개신교 목회자의 설교 준비를 돕는 조수";
+export const DEFAULT_CHAT_ROLE_RESEARCH =
+	"목회자의 연구·논문·강의 준비를 돕는 조수";
+/** v3 이하 교리 설정을 이관할 때 쓰는 고정 렉시콘 id — 백필이 반복돼도 결정적. */
+export const LEGACY_DOCTRINE_LEXICON_ID = "doctrine";
+
+/** 프로파일 id별 기본 채팅 역할 — 백필 '연구'(id research)만 연구 조수. */
+export function defaultChatRole(profileId: string): string {
+	return profileId === "research"
+		? DEFAULT_CHAT_ROLE_RESEARCH
+		: DEFAULT_CHAT_ROLE_SERMON;
 }
 
 export interface WeightedRecallSettings {
@@ -88,15 +125,17 @@ export interface WeightedRecallSettings {
 	showAnalysis: boolean;
 	/** 검색 결과 카드 개수(10/20/50). 채팅 참고 자료 수(chatTopK)와는 별개. */
 	resultCount: ResultCount;
-	/** 형태소 보호 단어(직접 추가분). 교리 키워드·동의어는 자동 포함. */
+	/** 형태소 보호 단어(직접 추가분). 어휘 사전의 키워드·동의어는 자동 포함. */
 	protectedTerms: string[];
 	relevanceThreshold: number;
-	doctrineRaw: string;
-	doctrineKeywords: string[];
-	doctrineSynonyms: Record<string, string[]>;
+	/**
+	 * 어휘 사전 목록. v3 이하의 doctrineRaw/doctrineKeywords/doctrineSynonyms는
+	 * normalizeSettings가 id "doctrine" 렉시콘 1개로 무손실 백필한다.
+	 */
+	lexicons: Lexicon[];
 }
 
-export const SETTINGS_VERSION = 3;
+export const SETTINGS_VERSION = 4;
 
 /** 아이디어 메모 콜아웃 기본 종류. */
 export const DEFAULT_IDEA_CALLOUT = "quote";
@@ -159,9 +198,7 @@ export const DEFAULT_SETTINGS: WeightedRecallSettings = {
 	resultCount: DEFAULT_RESULT_COUNT,
 	protectedTerms: [],
 	relevanceThreshold: 10,
-	doctrineRaw: "",
-	doctrineKeywords: [],
-	doctrineSynonyms: {},
+	lexicons: [],
 };
 
 export function isValidSettings(data: unknown): data is WeightedRecallSettings {
@@ -190,6 +227,65 @@ function filterStrings(v: unknown): string[] {
 	return Array.isArray(v)
 		? v.filter((s): s is string => typeof s === "string")
 		: [];
+}
+
+function uniqueTrimmed(arr: string[]): string[] {
+	const out: string[] = [];
+	const seen = new Set<string>();
+	for (const s of arr) {
+		const t = s.trim();
+		if (!t || seen.has(t)) continue;
+		seen.add(t);
+		out.push(t);
+	}
+	return out;
+}
+
+/** 렉시콘 배열 정제 — id 문자열·중복 제거, 이름 폴백, 필드·키워드 trim·중복 제거, 동의어 정규화. */
+function normalizeLexicons(v: unknown): Lexicon[] {
+	if (!Array.isArray(v)) return [];
+	const out: Lexicon[] = [];
+	const seen = new Set<string>();
+	for (const raw of v) {
+		if (!raw || typeof raw !== "object") continue;
+		const l = raw as Record<string, unknown>;
+		if (typeof l.id !== "string" || !l.id || seen.has(l.id)) continue;
+		seen.add(l.id);
+		out.push({
+			id: l.id,
+			name:
+				typeof l.name === "string" && l.name.trim()
+					? l.name.trim()
+					: `어휘 사전 ${out.length + 1}`,
+			fields: uniqueTrimmed(filterStrings(l.fields)),
+			domain: typeof l.domain === "string" ? l.domain.trim() : "",
+			raw: typeof l.raw === "string" ? l.raw : "",
+			keywords: uniqueTrimmed(filterStrings(l.keywords)),
+			synonyms: normalizeSynonyms(l.synonyms),
+		});
+	}
+	return out;
+}
+
+/** v3 이하 교리 필드 → 렉시콘 1개(값 그대로, 무손실). 셋 다 비어 있으면 []. */
+function legacyDoctrineLexicons(d: Record<string, unknown>): Lexicon[] {
+	const raw = typeof d.doctrineRaw === "string" ? d.doctrineRaw : "";
+	const keywords = filterStrings(d.doctrineKeywords);
+	const synonyms = normalizeSynonyms(d.doctrineSynonyms);
+	if (!raw && keywords.length === 0 && Object.keys(synonyms).length === 0) {
+		return [];
+	}
+	return [
+		{
+			id: LEGACY_DOCTRINE_LEXICON_ID,
+			name: "교리",
+			fields: ["doctrine"],
+			domain: "한국 기독교 신학",
+			raw,
+			keywords,
+			synonyms,
+		},
+	];
 }
 
 /**
@@ -267,9 +363,7 @@ export function migrateToFlat(data: unknown): WeightedRecallSettings | null {
 		resultCount: DEFAULT_RESULT_COUNT,
 		protectedTerms: [],
 		relevanceThreshold: clampThreshold(d.relevanceThreshold),
-		doctrineRaw: typeof d.doctrineRaw === "string" ? d.doctrineRaw : "",
-		doctrineKeywords: filterStrings(d.doctrineKeywords),
-		doctrineSynonyms: normalizeSynonyms(d.doctrineSynonyms),
+		lexicons: legacyDoctrineLexicons(d),
 	};
 }
 
@@ -317,9 +411,7 @@ export function migrateLegacySettings(
 		resultCount: DEFAULT_RESULT_COUNT,
 		protectedTerms: [],
 		relevanceThreshold: 10,
-		doctrineRaw: "",
-		doctrineKeywords: [],
-		doctrineSynonyms: {},
+		lexicons: [],
 	};
 }
 
@@ -372,6 +464,14 @@ export function normalizeSettings(
 				}))
 		: [];
 
+	// 렉시콘 — v4 배열이 있으면 정제, 없으면 v3 이하의 교리 필드에서 무손실 백필.
+	// (Object.assign(DEFAULT, data) 경로에서 구 필드는 extra prop으로 살아 있다.)
+	const legacy = settings as unknown as Record<string, unknown>;
+	let lexicons = normalizeLexicons(legacy.lexicons);
+	if (lexicons.length === 0) lexicons = legacyDoctrineLexicons(legacy);
+	const lexiconIdSet = new Set(lexicons.map((l) => l.id));
+	const allLexiconIds = lexicons.map((l) => l.id);
+
 	const rawProfiles: unknown[] = Array.isArray(settings.profiles)
 		? settings.profiles
 		: [];
@@ -399,14 +499,36 @@ export function normalizeSettings(
 					: f.weight;
 		}
 		seenIds.add(p.id);
-		profiles.push({ id: p.id, name, weights });
+		// v3 프로파일(lexiconIds 없음) → 존재하는 모든 렉시콘. 있으면 존재하는 id만·중복 제거.
+		const lexiconIds = Array.isArray(p.lexiconIds)
+			? uniqueTrimmed(filterStrings(p.lexiconIds)).filter((id) =>
+					lexiconIdSet.has(id),
+				)
+			: [...allLexiconIds];
+		const chatRole =
+			typeof p.chatRole === "string" && p.chatRole.trim()
+				? p.chatRole.trim()
+				: defaultChatRole(p.id);
+		profiles.push({ id: p.id, name, weights, lexiconIds, chatRole });
 	}
 	if (profiles.length === 0) {
 		const base: Record<string, number> = {};
 		for (const f of folders) base[f.path] = f.weight;
 		// 고정 id — 백필이 반복 실행돼도 결정적이도록.
-		profiles.push({ id: "default", name: "설교", weights: { ...base } });
-		profiles.push({ id: "research", name: "연구", weights: { ...base } });
+		profiles.push({
+			id: "default",
+			name: "설교",
+			weights: { ...base },
+			lexiconIds: [...allLexiconIds],
+			chatRole: defaultChatRole("default"),
+		});
+		profiles.push({
+			id: "research",
+			name: "연구",
+			weights: { ...base },
+			lexiconIds: [...allLexiconIds],
+			chatRole: defaultChatRole("research"),
+		});
 	}
 	const activeProfileId = profiles.some(
 		(p) => p.id === settings.activeProfileId,
@@ -446,12 +568,7 @@ export function normalizeSettings(
 		resultCount: normalizeResultCount(settings.resultCount),
 		protectedTerms: filterStrings(settings.protectedTerms),
 		relevanceThreshold: clampThreshold(settings.relevanceThreshold),
-		doctrineRaw:
-			typeof settings.doctrineRaw === "string"
-				? settings.doctrineRaw
-				: "",
-		doctrineKeywords: filterStrings(settings.doctrineKeywords),
-		doctrineSynonyms: normalizeSynonyms(settings.doctrineSynonyms),
+		lexicons,
 	};
 	mirrorActiveWeights(result);
 	return result;
@@ -510,8 +627,56 @@ export function getActiveProfile(
 ): WeightProfile {
 	return (
 		settings.profiles.find((p) => p.id === settings.activeProfileId) ??
-		settings.profiles[0] ?? { id: "default", name: "설교", weights: {} }
+		settings.profiles[0] ?? {
+			id: "default",
+			name: "설교",
+			weights: {},
+			// 빈 배열이면 렉시콘 검색이 조용히 사라지므로 전 렉시콘으로.
+			lexiconIds: (settings.lexicons ?? []).map((l) => l.id),
+			chatRole: DEFAULT_CHAT_ROLE_SERMON,
+		}
 	);
+}
+
+// ── 어휘 사전(렉시콘) ──
+
+export function makeLexiconId(): string {
+	return `lx${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
+/** 활성 프로파일이 쓰는 렉시콘(프로파일 lexiconIds 순서). 없는 id는 건너뜀. */
+export function getActiveLexicons(settings: WeightedRecallSettings): Lexicon[] {
+	const active = getActiveProfile(settings);
+	const byId = new Map(
+		(settings.lexicons ?? []).map((l) => [l.id, l] as const),
+	);
+	const out: Lexicon[] = [];
+	for (const id of active.lexiconIds) {
+		const l = byId.get(id);
+		if (l) out.push(l);
+	}
+	return out;
+}
+
+/**
+ * 색인 지문 — 노트 ↔ 키 매핑에 영향을 주는 것만(id·매핑 필드·정규화 키워드).
+ * 동의어·raw·이름·분야는 질의 시점 전용이라 제외 → 바꿔도 재도출이 돌지 않는다.
+ * 값이 바뀌면 다음 증분 재색인에서 불변 노트의 매핑을 경량 재도출한다(indexer).
+ */
+export function lexiconIndexFingerprint(
+	settings: WeightedRecallSettings,
+): string {
+	return (settings.lexicons ?? [])
+		.map((l) => {
+			const keys = [
+				...new Set(
+					l.keywords.map((k) => normalizeTag(k)).filter((k) => k.length > 0),
+				),
+			].sort();
+			return `${l.id}|${l.fields.join(",")}|${keys.join("|")}`;
+		})
+		.sort()
+		.join(";");
 }
 
 /** 한 폴더의 프로파일별 가중치 중 최대값(0~10). 키 누락 시 미러 weight 폴백. */

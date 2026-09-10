@@ -620,12 +620,18 @@ export default class WeightedRecallPlugin extends Plugin {
 			// 저장하고, 지문 형식(v3) 변경에 맞춰 post-migration reapply를 태운다.
 			// isValidSettings 가드로 타입은 v3처럼 보이지만 v2 데이터엔 profiles가 없다.
 			const rawProfiles: unknown = data.profiles;
-			if (!Array.isArray(rawProfiles) || rawProfiles.length === 0) {
+			// v3 → v4: lexicons 배열이 없으면 normalize가 교리 필드를 렉시콘으로 백필한 것.
+			const rawLexicons: unknown = data.lexicons;
+			if (
+				!Array.isArray(rawProfiles) ||
+				rawProfiles.length === 0 ||
+				!Array.isArray(rawLexicons)
+			) {
 				this.migratedThisLoad = true;
 				await this.saveSettings();
 				if (__DEV__) {
 					console.log(
-						"[a4p-sermon-desk] v3 마이그레이션: 테마 프로파일(설교·연구) 백필됨",
+						"[a4p-sermon-desk] 설정 마이그레이션: 테마 프로파일·어휘 사전 백필됨",
 					);
 				}
 			}
