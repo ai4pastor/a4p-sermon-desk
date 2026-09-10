@@ -18,6 +18,7 @@ import {
 	stripInlineMarkdown,
 	stripTagPrefix,
 } from "../markdown-text";
+import { highlightRendered } from "./highlight-dom";
 
 export interface HitListProps {
 	internalHits: HybridHit[];
@@ -716,40 +717,6 @@ function MarkdownPanel(props: {
 			ref={ref}
 		/>
 	);
-}
-
-/**
- * 렌더된 마크다운의 텍스트 노드에서 검색어를 <mark>로 감싼다.
- * 코드·이미 표시된 곳은 건너뛰고, 링크 텍스트(위키링크 별칭)는 내용이므로 포함.
- */
-function highlightRendered(root: HTMLElement, terms: string[]): void {
-	const re = buildTermRegex(terms);
-	if (!re) return;
-	const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-	const targets: Text[] = [];
-	let node: Node | null;
-	while ((node = walker.nextNode())) {
-		const t = node as Text;
-		if (!t.nodeValue) continue;
-		if (t.parentElement?.closest("code, pre, mark")) continue;
-		targets.push(t);
-	}
-	for (const t of targets) {
-		const parts = splitByTerms(t.nodeValue ?? "", re);
-		if (!parts.some((p) => p.hit)) continue;
-		const frag = document.createDocumentFragment();
-		for (const p of parts) {
-			if (p.hit) {
-				const mark = document.createElement("mark");
-				mark.className = "wr-mark";
-				mark.textContent = p.text;
-				frag.appendChild(mark);
-			} else {
-				frag.appendChild(document.createTextNode(p.text));
-			}
-		}
-		t.replaceWith(frag);
-	}
 }
 
 const MAX_KEY_CHIPS = 6;

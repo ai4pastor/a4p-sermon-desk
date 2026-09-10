@@ -10,7 +10,9 @@ import {
 import type { HybridHit } from "../search/hybrid";
 import type { InsertMode } from "../settings";
 import { INSERT_LABEL } from "../insert";
-import { stripInlineMarkdown, toPlainText } from "../markdown-text";
+import { stripInlineMarkdown } from "../markdown-text";
+import { pickAnchor } from "../anchor";
+import { collectBlocks, highlightRendered } from "./highlight-dom";
 
 export interface PopupHost {
 	app: App;
@@ -20,22 +22,20 @@ export interface PopupHost {
 	insertLink(hit: HybridHit, altKey: boolean): void;
 }
 
-/** 공백을 압축하고 NFC로 정규화한다 (앵커 매칭용). */
-function normalizeText(text: string): string {
-	return text.replace(/\s+/g, " ").trim().normalize("NFC");
-}
-
 export class NotePopupModal extends Modal {
 	private host: PopupHost;
 	private hit: HybridHit;
+	/** 하이라이트·앵커 선택에 쓰는 검색어 — 카드 스니펫과 같은 기준(쿼리 토큰 또는 매칭 키). */
+	private terms: string[];
 	private closed = false;
 	/** MarkdownRenderer가 요구하는 수명 관리용 Component (Modal은 Component가 아님) */
 	private renderComponent = new Component();
 
-	constructor(host: PopupHost, hit: HybridHit) {
+	constructor(host: PopupHost, hit: HybridHit, terms: string[] = []) {
 		super(host.app);
 		this.host = host;
 		this.hit = hit;
+		this.terms = terms;
 	}
 
 	onOpen(): void {
@@ -130,57 +130,28 @@ export class NotePopupModal extends Modal {
 		body.empty();
 		while (temp.firstChild) body.appendChild(temp.firstChild);
 
-		const anchor = this.findAnchor(body);
-		if (anchor) {
-			anchor.addClass("wr-popup-anchor");
-			// 레이아웃이 잡힌 뒤 스크롤해야 정확히 가운데에 온다.
-			window.setTimeout(() => {
-				if (this.closed) return;
-				anchor.scrollIntoView({ block: "center" });
-				anchor.removeClass("wr-flash");
-				// reflow로 애니메이션 재시작
-				void anchor.offsetWidth;
-				anchor.addClass("wr-flash");
-			}, 50);
-		}
-	}
-
-	/** 이 hit이 가리키는 청크 위치의 요소를 찾는다. heading 우선, 다음 본문 스니펫. */
-	private findAnchor(body: HTMLElement): HTMLElement | null {
-		if (this.hit.heading) {
-			const target = normalizeText(stripInlineMarkdown(this.hit.heading));
-			const headings = body.querySelectorAll<HTMLElement>(
-				"h1, h2, h3, h4, h5, h6",
-			);
-			for (const el of Array.from(headings)) {
-				if (normalizeText(el.textContent ?? "") === target) {
-					return el;
-				}
-			}
-		}
-		// 청크를 평문 줄로 나눠 앞의 몇 줄을 탐침으로 — 예전엔 "[태그: …]"·"[!quote]"로
-		// 시작하는 단일 탐침이라 대부분 청크에서 위치를 못 찾았다. 콜아웃 제목은
-		// .callout-title-inner에 렌더되므로 본문 줄이 p/li에서 맞는다.
-		const source = this.hit.fullText || this.hit.preview;
-		const probes = toPlainText(source)
-			.split("\n")
-			.map((l) => normalizeText(l))
-			.filter((l) => l.length >= 8)
-			.slice(0, 5)
-			.map((l) => l.slice(0, 40));
-		if (probes.length === 0) return null;
-		const blocks = Array.from(
-			body.querySelectorAll<HTMLElement>(
-				"p, li, blockquote, h1, h2, h3, h4, h5, h6, pre, td",
-			),
-		);
-		for (const probe of probes) {
-			for (const el of blocks) {
-				if (normalizeText(el.textContent ?? "").includes(probe)) {
-					return el;
-				}
-			}
-		}
-		return null;
+		// 본문 전체에 검색어 <mark> (펼침 카드와 동일) → 블록 수집 → 앵커 선택.
+		// 예전엔 청크 첫 줄을 탐침으로 써서 헤딩 없는 노트(=청크 1개)에서 첫 글머리표가
+		// 항상 하이라이트됐다. 이제 검색어가 든 블록만 노란 배경, 나머지는 위치 이동만.
+		highlightRendered(body, this.terms);
+		const blocks = collectBlocks(body);
+		const pick = pickAnchor(blocks, {
+			terms: this.terms,
+			chunkText: this.hit.fullText || this.hit.preview,
+			heading: this.hit.heading,
+		});
+		if (!pick) return;
+		const anchor = blocks[pick.index].el;
+		if (pick.reason === "terms") anchor.addClass("wr-popup-anchor");
+		// 레이아웃이 잡힌 뒤 스크롤해야 정확히 가운데에 온다.
+		window.setTimeout(() => {
+			if (this.closed) return;
+			anchor.scrollIntoView({ block: "center" });
+			if (pick.reason === "chunk") return;
+			anchor.removeClass("wr-flash");
+			// reflow로 애니메이션 재시작
+			void anchor.offsetWidth;
+			anchor.addClass("wr-flash");
+		}, 50);
 	}
 }

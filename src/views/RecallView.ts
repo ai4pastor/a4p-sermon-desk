@@ -1107,6 +1107,7 @@ export class RecallView extends ItemView {
 							insertLink: (hit, alt) => this.insertLink(hit, alt),
 						},
 						h,
+						state.queryTerms,
 					).open(),
 			});
 		}
@@ -1284,6 +1285,7 @@ export class RecallView extends ItemView {
 					insertLink: (hit, alt) => this.insertLink(hit, alt),
 				},
 				h,
+				h.trace?.matchedTerms ?? [],
 			).open();
 		renderChatPanel(this.chatMountEl, {
 			messages: this.chatMessages,
