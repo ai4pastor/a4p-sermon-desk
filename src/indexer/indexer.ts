@@ -70,7 +70,7 @@ function deleteNoteRows(db: Database, paths: string[]): void {
 		"DELETE FROM chunk_terms WHERE chunk_id IN (SELECT id FROM chunks WHERE note_path = ?)",
 		"DELETE FROM embeddings WHERE chunk_id IN (SELECT id FROM chunks WHERE note_path = ?)",
 		"DELETE FROM chunks WHERE note_path = ?",
-		"DELETE FROM note_doctrines WHERE note_path = ?",
+		"DELETE FROM note_lexicon_keys WHERE note_path = ?",
 		"DELETE FROM note_tags WHERE note_path = ?",
 		"DELETE FROM notes WHERE path = ?",
 	].map((sql) => db.prepare(sql));
@@ -155,8 +155,8 @@ export async function runIndex(
 	const insertTerm = db.prepare(
 		"INSERT INTO chunk_terms(chunk_id, term) VALUES (?, ?)",
 	);
-	const insertNoteDoctrine = db.prepare(
-		"INSERT OR IGNORE INTO note_doctrines(note_path, doctrine_key) VALUES (?, ?)",
+	const insertNoteLexiconKey = db.prepare(
+		"INSERT OR IGNORE INTO note_lexicon_keys(note_path, lexicon_id, key) VALUES (?, ?, ?)",
 	);
 	const insertNoteTag = db.prepare(
 		"INSERT OR IGNORE INTO note_tags(note_path, tag_key) VALUES (?, ?)",
@@ -182,7 +182,7 @@ export async function runIndex(
 	try {
 		if (full) {
 			db.exec(
-				"DELETE FROM chunk_terms; DELETE FROM embeddings; DELETE FROM chunks; DELETE FROM note_doctrines; DELETE FROM note_tags; DELETE FROM notes;",
+				"DELETE FROM chunk_terms; DELETE FROM embeddings; DELETE FROM chunks; DELETE FROM note_lexicon_keys; DELETE FROM note_tags; DELETE FROM notes;",
 			);
 		} else {
 			deleteNoteRows(db, [...removedPaths, ...updatedPaths]);
@@ -208,7 +208,7 @@ export async function runIndex(
 			timings.parseMs += performance.now() - t;
 
 			for (const dk of parsed.doctrineKeys) {
-				insertNoteDoctrine.run([rec.path, dk]);
+				insertNoteLexiconKey.run([rec.path, "doctrine", dk]);
 			}
 			for (const tk of parsed.tagKeys) {
 				insertNoteTag.run([rec.path, tk]);
@@ -265,11 +265,11 @@ export async function runIndex(
 		}
 
 		if (lexiconChanged) {
-			// 경량 렉시콘 재적용 — 불변 노트의 note_doctrines/note_tags만 재계산.
+			// 경량 렉시콘 재적용 — 불변 노트의 note_lexicon_keys/note_tags만 재계산.
 			// parseFile은 metadataCache 기반(tokenize 없음)이라 저렴하고,
 			// chunks/embeddings는 건드리지 않는다(tagPrefix는 렉시콘 무관).
 			const delDoc = db.prepare(
-				"DELETE FROM note_doctrines WHERE note_path = ?",
+				"DELETE FROM note_lexicon_keys WHERE note_path = ?",
 			);
 			const delTag = db.prepare("DELETE FROM note_tags WHERE note_path = ?");
 			try {
@@ -281,7 +281,7 @@ export async function runIndex(
 					delDoc.run([rec.path]);
 					delTag.run([rec.path]);
 					for (const dk of parsed.doctrineKeys) {
-						insertNoteDoctrine.run([rec.path, dk]);
+						insertNoteLexiconKey.run([rec.path, "doctrine", dk]);
 					}
 					for (const tk of parsed.tagKeys) {
 						insertNoteTag.run([rec.path, tk]);
@@ -344,7 +344,7 @@ export async function runIndex(
 		insertNote.free();
 		insertChunk.free();
 		insertTerm.free();
-		insertNoteDoctrine.free();
+		insertNoteLexiconKey.free();
 		insertNoteTag.free();
 	}
 }

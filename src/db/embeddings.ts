@@ -75,21 +75,25 @@ export function getMissingChunks(
 	return out;
 }
 
-export type KeyEmbeddingTable = "doctrine_embeddings" | "tag_embeddings";
+/** 키 임베딩 범위(key_embeddings.scope) — 볼트 태그는 "tag", 렉시콘은 "lex:<id>". */
+export const TAG_SCOPE = "tag";
+export function lexScope(lexiconId: string): string {
+	return `lex:${lexiconId}`;
+}
 
 export function upsertKeyEmbedding(
 	db: Database,
-	table: KeyEmbeddingTable,
+	scope: string,
 	key: string,
 	model: string,
 	vec: Float32Array,
 	embeddedAt: number,
 ): void {
 	const stmt = db.prepare(
-		`INSERT OR REPLACE INTO ${table}(key, model, dim, vector, embedded_at) VALUES (?, ?, ?, ?, ?)`,
+		"INSERT OR REPLACE INTO key_embeddings(scope, key, model, dim, vector, embedded_at) VALUES (?, ?, ?, ?, ?, ?)",
 	);
 	try {
-		stmt.run([key, model, vec.length, floatToBlob(vec), embeddedAt]);
+		stmt.run([scope, key, model, vec.length, floatToBlob(vec), embeddedAt]);
 	} finally {
 		stmt.free();
 	}
@@ -97,12 +101,14 @@ export function upsertKeyEmbedding(
 
 export function deleteKeyEmbedding(
 	db: Database,
-	table: KeyEmbeddingTable,
+	scope: string,
 	key: string,
 ): void {
-	const stmt = db.prepare(`DELETE FROM ${table} WHERE key = ?`);
+	const stmt = db.prepare(
+		"DELETE FROM key_embeddings WHERE scope = ? AND key = ?",
+	);
 	try {
-		stmt.run([key]);
+		stmt.run([scope, key]);
 	} finally {
 		stmt.free();
 	}
@@ -110,12 +116,14 @@ export function deleteKeyEmbedding(
 
 export function getKeyEmbedding(
 	db: Database,
-	table: KeyEmbeddingTable,
+	scope: string,
 	key: string,
 ): Float32Array | null {
-	const stmt = db.prepare(`SELECT vector FROM ${table} WHERE key = ?`);
+	const stmt = db.prepare(
+		"SELECT vector FROM key_embeddings WHERE scope = ? AND key = ?",
+	);
 	try {
-		stmt.bind([key]);
+		stmt.bind([scope, key]);
 		if (!stmt.step()) return null;
 		const row = stmt.get() as [Uint8Array];
 		return blobToFloat(row[0]);
@@ -126,13 +134,15 @@ export function getKeyEmbedding(
 
 export function getEmbeddedKeys(
 	db: Database,
-	table: KeyEmbeddingTable,
+	scope: string,
 	model: string,
 ): Set<string> {
-	const stmt = db.prepare(`SELECT key FROM ${table} WHERE model = ?`);
+	const stmt = db.prepare(
+		"SELECT key FROM key_embeddings WHERE scope = ? AND model = ?",
+	);
 	const out = new Set<string>();
 	try {
-		stmt.bind([model]);
+		stmt.bind([scope, model]);
 		while (stmt.step()) {
 			const row = stmt.get() as [string];
 			out.add(row[0]);
@@ -145,14 +155,14 @@ export function getEmbeddedKeys(
 
 export function getMaxEmbeddedAt(
 	db: Database,
-	table: KeyEmbeddingTable,
+	scope: string,
 	model: string,
 ): number {
 	const stmt = db.prepare(
-		`SELECT MAX(embedded_at) FROM ${table} WHERE model = ?`,
+		"SELECT MAX(embedded_at) FROM key_embeddings WHERE scope = ? AND model = ?",
 	);
 	try {
-		stmt.bind([model]);
+		stmt.bind([scope, model]);
 		if (!stmt.step()) return 0;
 		const row = stmt.get() as [number | null];
 		return row[0] ?? 0;
@@ -163,13 +173,15 @@ export function getMaxEmbeddedAt(
 
 export function loadAllKeyEmbeddings(
 	db: Database,
-	table: KeyEmbeddingTable,
+	scope: string,
 	model: string,
 ): Map<string, Float32Array> {
-	const stmt = db.prepare(`SELECT key, vector FROM ${table} WHERE model = ?`);
+	const stmt = db.prepare(
+		"SELECT key, vector FROM key_embeddings WHERE scope = ? AND model = ?",
+	);
 	const out = new Map<string, Float32Array>();
 	try {
-		stmt.bind([model]);
+		stmt.bind([scope, model]);
 		while (stmt.step()) {
 			const row = stmt.get() as [string, Uint8Array];
 			out.set(row[0], blobToFloat(row[1]));
@@ -186,14 +198,14 @@ export function loadAllKeyEmbeddings(
  */
 export function getKeyEmbeddingFingerprint(
 	db: Database,
-	table: KeyEmbeddingTable,
+	scope: string,
 	model: string,
 ): string {
 	const stmt = db.prepare(
-		`SELECT COUNT(*), MAX(embedded_at) FROM ${table} WHERE model = ?`,
+		"SELECT COUNT(*), MAX(embedded_at) FROM key_embeddings WHERE scope = ? AND model = ?",
 	);
 	try {
-		stmt.bind([model]);
+		stmt.bind([scope, model]);
 		if (!stmt.step()) return "0:0";
 		const row = stmt.get() as [number, number | null];
 		return `${row[0]}:${row[1] ?? 0}`;
@@ -202,12 +214,19 @@ export function getKeyEmbeddingFingerprint(
 	}
 }
 
-export function getDistinctDoctrineKeys(db: Database): string[] {
+/** 주어진 렉시콘들에 매핑된 키(합집합, 정렬). 빈 배열이면 [] — 태그 전용 검색. */
+export function getDistinctLexiconKeys(
+	db: Database,
+	lexiconIds: string[],
+): string[] {
+	if (lexiconIds.length === 0) return [];
+	const placeholders = lexiconIds.map(() => "?").join(",");
 	const stmt = db.prepare(
-		`SELECT DISTINCT doctrine_key FROM note_doctrines ORDER BY doctrine_key`,
+		`SELECT DISTINCT key FROM note_lexicon_keys WHERE lexicon_id IN (${placeholders}) ORDER BY key`,
 	);
 	const out: string[] = [];
 	try {
+		stmt.bind(lexiconIds);
 		while (stmt.step()) {
 			const row = stmt.get() as [string];
 			out.push(row[0]);

@@ -43,7 +43,7 @@ export interface MiniDb {
 	): void;
 	/** 청크 추가 — 명시적 id(base+seq)를 부여하고 id를 반환. */
 	addChunk(notePath: string, spec: ChunkSpec): number;
-	addDoctrine(notePath: string, key: string): void;
+	addLexiconKey(notePath: string, lexiconId: string, key: string): void;
 	addTag(notePath: string, key: string): void;
 	close(): void;
 }
@@ -86,10 +86,10 @@ export async function makeMiniDb(): Promise<MiniDb> {
 			}
 			return id;
 		},
-		addDoctrine(notePath, key) {
+		addLexiconKey(notePath, lexiconId, key) {
 			db.run(
-				"INSERT OR IGNORE INTO note_doctrines(note_path, doctrine_key) VALUES (?, ?)",
-				[notePath, key],
+				"INSERT OR IGNORE INTO note_lexicon_keys(note_path, lexicon_id, key) VALUES (?, ?, ?)",
+				[notePath, lexiconId, key],
 			);
 		},
 		addTag(notePath, key) {

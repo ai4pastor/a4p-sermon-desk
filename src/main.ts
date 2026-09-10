@@ -163,7 +163,7 @@ export default class WeightedRecallPlugin extends Plugin {
 			}),
 		);
 
-		this.db = await loadOrCreateDb(this);
+		this.db = await loadOrCreateDb(this, () => this.markDbDirty());
 		if (__DEV__) {
 			const v = this.db.exec(
 				"SELECT value FROM meta WHERE key='schema_version'",

@@ -39,7 +39,7 @@ import { FileSuggest } from "./file-suggest";
 import { hasTemplater, templaterTemplatesFolder } from "./idea-memo-create";
 import { confirmModal } from "./views/ConfirmModal";
 import {
-	embedDoctrineKeys,
+	embedLexiconKeys,
 	embedTagKeys,
 	type LexiconProgress,
 } from "./embedder/embed-lexicon";
@@ -51,6 +51,8 @@ import {
 	getEmbeddedKeys,
 	getDistinctTagKeys,
 	getMaxEmbeddedAt,
+	lexScope,
+	TAG_SCOPE,
 } from "./db/embeddings";
 import { getMeta, FOLDERS_FP_KEY, PROTECTED_FP_KEY } from "./db/meta";
 import { countUnindexed, scanVault } from "./indexer/scanner";
@@ -593,10 +595,10 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 			const total = this.plugin.settings.doctrineKeywords.length;
 			const db = this.plugin.db;
 			const embedded = db
-				? getEmbeddedKeys(db, "doctrine_embeddings", EMBEDDING_MODEL).size
+				? getEmbeddedKeys(db, lexScope("doctrine"), EMBEDDING_MODEL).size
 				: 0;
 			const lastAt = db
-				? getMaxEmbeddedAt(db, "doctrine_embeddings", EMBEDDING_MODEL)
+				? getMaxEmbeddedAt(db, lexScope("doctrine"), EMBEDDING_MODEL)
 				: 0;
 			return {
 				total,
@@ -639,11 +641,14 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 				btn.setDisabled(true);
 				try {
 					this.plugin.markDbDirty();
-					const res = await embedDoctrineKeys(
+					const res = await embedLexiconKeys(
 						db,
-						this.plugin.settings.doctrineKeywords,
+						{
+							id: "doctrine",
+							keywords: this.plugin.settings.doctrineKeywords,
+							synonyms: this.plugin.settings.doctrineSynonyms,
+						},
 						apiKey,
-						this.plugin.settings.doctrineSynonyms,
 						(p: LexiconProgress) => {
 							btn.setButtonText(`임베딩 중 ${p.done}/${p.total}`);
 							card.setState("running", {
@@ -796,9 +801,8 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 			if (!db)
 				return { total: 0, embedded: 0, pending: 0, db: null, lastAt: 0 };
 			const total = getDistinctTagKeys(db).length;
-			const embedded = getEmbeddedKeys(db, "tag_embeddings", EMBEDDING_MODEL)
-				.size;
-			const lastAt = getMaxEmbeddedAt(db, "tag_embeddings", EMBEDDING_MODEL);
+			const embedded = getEmbeddedKeys(db, TAG_SCOPE, EMBEDDING_MODEL).size;
+			const lastAt = getMaxEmbeddedAt(db, TAG_SCOPE, EMBEDDING_MODEL);
 			return {
 				total,
 				embedded,

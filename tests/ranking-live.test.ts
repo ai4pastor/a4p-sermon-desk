@@ -54,7 +54,8 @@ import {
 	type SearchLexicons,
 } from "../src/search/tag";
 import { topVectorKeys, vectorSearch } from "../src/search/vector";
-import { loadAllKeyEmbeddings } from "../src/db/embeddings";
+import { lexScope, loadAllKeyEmbeddings, TAG_SCOPE } from "../src/db/embeddings";
+import { runMigrations } from "../src/db/migrate";
 import { EMBEDDING_MODEL, embedTexts } from "../src/embedder/openai";
 import { setProtectedForTests, tokenizeReal } from "./helpers/garu-node";
 import { deriveProtectedTerms } from "../src/morpheme/protected";
@@ -145,7 +146,15 @@ describe.skipIf(!LIVE_DB)("실측 하니스 (실제 index.db 사본)", () => {
 				path.resolve(process.cwd(), "node_modules/sql.js/dist", f),
 		});
 		db = new SQL.Database(bytes);
-		lexicons = loadSearchLexicons(db);
+		// 사본이 구 스키마(v2)면 메모리 안에서 v3로 올린다 — 실 데이터 마이그레이션 검증 겸함.
+		const migrated = runMigrations(db);
+		report.push(`[스키마] 마이그레이션 ${migrated ? "실행됨(v2→v3)" : "불필요(최신)"}`);
+		const embRows = db.exec("SELECT scope, COUNT(*) FROM key_embeddings GROUP BY scope ORDER BY scope")[0]?.values ?? [];
+		const lexRows = db.exec("SELECT lexicon_id, COUNT(*), COUNT(DISTINCT key) FROM note_lexicon_keys GROUP BY lexicon_id")[0]?.values ?? [];
+		report.push(
+			`[렉시콘] 키 임베딩 ${embRows.map((r) => `${r[0]}=${r[1]}`).join(" · ") || "없음"} / 노트 매핑 ${lexRows.map((r) => `${r[0]}: ${r[1]}행·${r[2]}키`).join(" · ") || "없음"}`,
+		);
+		lexicons = loadSearchLexicons(db, ["doctrine"]);
 
 		let protectedCount = 0;
 		if (DATA_JSON) {
@@ -440,7 +449,7 @@ describe.skipIf(!LIVE_DB)("실측 하니스 (실제 index.db 사본)", () => {
 		report.push(
 			`[키 추출] "칭의란 무엇인가" → dExact={${fmt(keys.dExact)}} dSyn={${fmt(keys.dSyn)}} tExact={${fmt(keys.tExact)}}`,
 		);
-		if (lexicons?.doctrine.has("칭의")) {
+		if (lexicons?.lexicon.has("칭의")) {
 			expect(keys.dExact.has("칭의")).toBe(true);
 		}
 		const synKeys = keysByQuery.get("doctrine-syn")!;
@@ -459,12 +468,12 @@ describe.skipIf(!LIVE_DB)("실측 하니스 (실제 index.db 사본)", () => {
 			const keys = keysByQuery.get("vec-discovery")!;
 			const dEmb = loadAllKeyEmbeddings(
 				db,
-				"doctrine_embeddings",
+				lexScope("doctrine"),
 				EMBEDDING_MODEL,
 			);
 			const tEmb = loadAllKeyEmbeddings(
 				db,
-				"tag_embeddings",
+				TAG_SCOPE,
 				EMBEDDING_MODEL,
 			);
 			expect(dEmb.size).toBeGreaterThan(0);
@@ -472,7 +481,7 @@ describe.skipIf(!LIVE_DB)("실측 하니스 (실제 index.db 사본)", () => {
 			const dVec = topVectorKeys(
 				vec,
 				dEmb,
-				lexicons.doctrine,
+				lexicons.lexicon,
 				exclude,
 				VEC_THRESHOLD_DOCTRINE,
 				VEC_TOPK,

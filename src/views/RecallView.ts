@@ -40,6 +40,8 @@ import { topVectorKeyHits } from "../search/vector";
 import {
 	loadAllKeyEmbeddings,
 	getKeyEmbeddingFingerprint,
+	lexScope,
+	TAG_SCOPE,
 } from "../db/embeddings";
 import {
 	embedTexts,
@@ -163,7 +165,7 @@ export class RecallView extends ItemView {
 	private synonymIndex: Map<string, string[][]> = new Map();
 	private synonymIndexSrc: Record<string, string[]> | null = null;
 	private keyEmbeddings: {
-		doctrine: Map<string, Float32Array>;
+		lexicon: Map<string, Float32Array>;
 		tag: Map<string, Float32Array>;
 		fp: string;
 	} | null = null;
@@ -929,7 +931,8 @@ export class RecallView extends ItemView {
 			this.synonymIndexSrc = synonyms;
 			if (gen !== this.refreshGen) return;
 		}
-		const lexicons = loadSearchLexicons(db);
+		const lexiconIds = ["doctrine"];
+		const lexicons = loadSearchLexicons(db, lexiconIds);
 		const keys = await extractQueryKeysWithSynonyms(
 			ctx.text,
 			lexicons,
@@ -940,15 +943,24 @@ export class RecallView extends ItemView {
 		// 텍스트(정확·동의어)가 놓친 의미 유사 키를 벡터로 발견.
 		// 임베딩(=API 키)이 없으면 통째 skip → 기존 정확+동의어 동작 그대로.
 		if (queryEmbedding) {
-			const fp = `${EMBEDDING_MODEL}:${getKeyEmbeddingFingerprint(db, "doctrine_embeddings", EMBEDDING_MODEL)}:${getKeyEmbeddingFingerprint(db, "tag_embeddings", EMBEDDING_MODEL)}`;
+			const lexScopes = lexiconIds.map((id) => lexScope(id));
+			const fp = [
+				EMBEDDING_MODEL,
+				...lexScopes.map(
+					(s) => `${s}=${getKeyEmbeddingFingerprint(db, s, EMBEDDING_MODEL)}`,
+				),
+				`${TAG_SCOPE}=${getKeyEmbeddingFingerprint(db, TAG_SCOPE, EMBEDDING_MODEL)}`,
+			].join(":");
 			if (!this.keyEmbeddings || this.keyEmbeddings.fp !== fp) {
+				const lexicon = new Map<string, Float32Array>();
+				for (const s of lexScopes) {
+					for (const [k, v] of loadAllKeyEmbeddings(db, s, EMBEDDING_MODEL)) {
+						lexicon.set(k, v);
+					}
+				}
 				this.keyEmbeddings = {
-					doctrine: loadAllKeyEmbeddings(
-						db,
-						"doctrine_embeddings",
-						EMBEDDING_MODEL,
-					),
-					tag: loadAllKeyEmbeddings(db, "tag_embeddings", EMBEDDING_MODEL),
+					lexicon,
+					tag: loadAllKeyEmbeddings(db, TAG_SCOPE, EMBEDDING_MODEL),
 					fp,
 				};
 			}
@@ -956,8 +968,8 @@ export class RecallView extends ItemView {
 			keys.vecSims = new Map();
 			for (const k of topVectorKeyHits(
 				queryEmbedding,
-				this.keyEmbeddings.doctrine,
-				lexicons.doctrine,
+				this.keyEmbeddings.lexicon,
+				lexicons.lexicon,
 				dExclude,
 				VEC_THRESHOLD_DOCTRINE,
 				VEC_TOPK,
@@ -1001,6 +1013,7 @@ export class RecallView extends ItemView {
 			topN: topN * 3,
 			excludePath: file.path,
 			resolveWeight,
+			lexiconIds,
 		});
 		const hits = dedupeHits(rawHits).slice(0, topN);
 		const ms = performance.now() - t0;

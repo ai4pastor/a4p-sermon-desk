@@ -2,7 +2,7 @@ import { App, TFile, normalizePath } from "obsidian";
 import type { Database } from "sql.js";
 import type { HybridHit, MatchedKey } from "./hybrid";
 import { tokenize } from "../morpheme";
-import { getDistinctDoctrineKeys, getDistinctTagKeys } from "../db/embeddings";
+import { getDistinctLexiconKeys, getDistinctTagKeys } from "../db/embeddings";
 
 const W_DOCTRINE_EXACT = 3;
 const W_DOCTRINE_SYN = 2;
@@ -16,13 +16,18 @@ export const VEC_THRESHOLD_TAG = 0.6;
 export const VEC_TOPK = 5;
 
 export interface SearchLexicons {
-	doctrine: Set<string>;
+	/** 활성 렉시콘들의 키 합집합(note_lexicon_keys). dExact/dSyn/dVec의 범위. */
+	lexicon: Set<string>;
 	tag: Set<string>;
 }
 
-export function loadSearchLexicons(db: Database): SearchLexicons {
+/** lexiconIds = 활성 프로파일이 쓰는 렉시콘 id. 빈 배열이면 태그 전용. */
+export function loadSearchLexicons(
+	db: Database,
+	lexiconIds: string[],
+): SearchLexicons {
 	return {
-		doctrine: new Set(getDistinctDoctrineKeys(db)),
+		lexicon: new Set(getDistinctLexiconKeys(db, lexiconIds)),
 		tag: new Set(getDistinctTagKeys(db)),
 	};
 }
@@ -64,12 +69,12 @@ export async function extractQueryKeysWithSynonyms(
 ): Promise<QueryKeys> {
 	const matched = await extractQueryKeys(
 		queryText,
-		new Set([...lexicons.doctrine, ...lexicons.tag]),
+		new Set([...lexicons.lexicon, ...lexicons.tag]),
 	);
 	const dExact = new Set<string>();
 	const tExact = new Set<string>();
 	for (const k of matched) {
-		if (lexicons.doctrine.has(k)) dExact.add(k);
+		if (lexicons.lexicon.has(k)) dExact.add(k);
 		if (lexicons.tag.has(k)) tExact.add(k);
 	}
 	const dSyn = new Set<string>();
@@ -77,7 +82,7 @@ export async function extractQueryKeysWithSynonyms(
 		const bodyStems = new Set(await tokenize(stripEmoji(queryText)));
 		if (bodyStems.size > 0) {
 			for (const [key, lists] of synonymIndex) {
-				if (!lexicons.doctrine.has(key)) continue;
+				if (!lexicons.lexicon.has(key)) continue;
 				if (dExact.has(key)) continue;
 				for (const stems of lists) {
 					if (stems.every((s) => bodyStems.has(s))) {
@@ -151,7 +156,7 @@ export function buildLexicon(db: Database): Set<string> {
 	const set = new Set<string>();
 	const rows = db.exec(
 		`SELECT key FROM (
-			SELECT doctrine_key AS key FROM note_doctrines
+			SELECT key FROM note_lexicon_keys
 			UNION
 			SELECT tag_key FROM note_tags
 		)`,
@@ -266,6 +271,11 @@ export interface TagSearchOpts {
 	 * 미지정 시 DB notes.weight(scope 값) 사용 — 디버그·폴백 전용.
 	 */
 	resolveWeight?: (notePath: string) => number;
+	/**
+	 * 채점할 렉시콘 id. 빈 배열 = 태그 전용. 미지정(undefined) = 전 렉시콘 — 테스트·폴백 전용,
+	 * RecallView는 항상 활성 프로파일의 id 배열을 넘긴다.
+	 */
+	lexiconIds?: string[];
 }
 
 export function tagSearch(
@@ -287,9 +297,16 @@ export function tagSearch(
 	const allKeysArr = [...allKeys];
 	const placeholders = allKeysArr.map(() => "?").join(",");
 
+	// 같은 (노트, 키)가 두 렉시콘에 있어도 한 번만 채점 — DISTINCT.
+	const lexFilter =
+		opts.lexiconIds === undefined
+			? ""
+			: opts.lexiconIds.length === 0
+				? "AND 0"
+				: `AND lexicon_id IN (${opts.lexiconIds.map(() => "?").join(",")})`;
 	const docRows = db.exec(
-		`SELECT note_path, doctrine_key FROM note_doctrines WHERE doctrine_key IN (${placeholders})`,
-		allKeysArr,
+		`SELECT DISTINCT note_path, key FROM note_lexicon_keys WHERE key IN (${placeholders}) ${lexFilter}`,
+		[...allKeysArr, ...(opts.lexiconIds ?? [])],
 	);
 	const tagRows = db.exec(
 		`SELECT note_path, tag_key FROM note_tags WHERE tag_key IN (${placeholders})`,

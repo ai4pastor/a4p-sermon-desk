@@ -49,7 +49,7 @@ describe("tagSearch — 가중합", () => {
 			for (const [kind, path, key] of setups) {
 				m.addNote(path);
 				m.addChunk(path, { text: `${key} 본문` });
-				if (kind === "doctrine") m.addDoctrine(path, key);
+				if (kind === "doctrine") m.addLexiconKey(path, "doctrine", key);
 				else m.addTag(path, key);
 			}
 			const hits = tagSearch(
@@ -81,7 +81,7 @@ describe("tagSearch — 가중합", () => {
 		try {
 			m.addNote("n.md");
 			m.addChunk("n.md", { text: "본문" });
-			m.addDoctrine("n.md", "칭의");
+			m.addLexiconKey("n.md", "doctrine", "칭의");
 			const hits = tagSearch(
 				m.db,
 				keysOf({
@@ -101,7 +101,7 @@ describe("tagSearch — 가중합", () => {
 		try {
 			m.addNote("n.md");
 			m.addChunk("n.md", { text: "본문" });
-			m.addDoctrine("n.md", "칭의");
+			m.addLexiconKey("n.md", "doctrine", "칭의");
 			m.addTag("n.md", "감사");
 			const hits = tagSearch(
 				m.db,
@@ -129,7 +129,7 @@ describe("tagSearch — 가중합", () => {
 		try {
 			m.addNote("n.md");
 			m.addChunk("n.md", { text: "본문" });
-			for (const k of ["칭의", "구원", "성화"]) m.addDoctrine("n.md", k);
+			for (const k of ["칭의", "구원", "성화"]) m.addLexiconKey("n.md", "doctrine", k);
 			for (const k of ["감사", "거룩한삶"]) m.addTag("n.md", k);
 			const hits = tagSearch(
 				m.db,
@@ -170,7 +170,7 @@ describe("tagSearch — 가중치·제외", () => {
 			m.addNote("zero.md", { weight: 0 });
 			for (const p of ["hi.md", "zero.md"]) {
 				m.addChunk(p, { text: "본문" });
-				m.addDoctrine(p, "칭의");
+				m.addLexiconKey(p, "doctrine", "칭의");
 			}
 			const hits = tagSearch(
 				m.db,
@@ -192,7 +192,7 @@ describe("tagSearch — 가중치·제외", () => {
 			m.addNote("off.md", { weight: 1.5 });
 			for (const p of ["on.md", "off.md"]) {
 				m.addChunk(p, { text: "본문" });
-				m.addDoctrine(p, "칭의");
+				m.addLexiconKey(p, "doctrine", "칭의");
 			}
 			const hits = tagSearch(
 				m.db,
@@ -215,7 +215,7 @@ describe("tagSearch — 가중치·제외", () => {
 			m.addNote("cur.md");
 			for (const p of ["keep.md", "cur.md"]) {
 				m.addChunk(p, { text: "본문" });
-				m.addDoctrine(p, "칭의");
+				m.addLexiconKey(p, "doctrine", "칭의");
 			}
 			const hits = tagSearch(
 				m.db,
@@ -238,7 +238,7 @@ describe("tagSearch — 대표 청크", () => {
 			m.addChunk("n.md", { text: "첫 번째 청크" });
 			const second = m.addChunk("n.md", { text: "두 번째 청크 — 칭의가 여기" });
 			m.addChunk("n.md", { text: "세 번째 청크 — 칭의 또 등장" });
-			m.addDoctrine("n.md", "칭의");
+			m.addLexiconKey("n.md", "doctrine", "칭의");
 			const hits = tagSearch(
 				m.db,
 				keysOf({ dExact: new Set(["칭의"]) }),
@@ -257,7 +257,7 @@ describe("tagSearch — 대표 청크", () => {
 			m.addNote("n.md");
 			const first = m.addChunk("n.md", { text: "첫 번째 청크" });
 			m.addChunk("n.md", { text: "두 번째 청크" });
-			m.addDoctrine("n.md", "칭의");
+			m.addLexiconKey("n.md", "doctrine", "칭의");
 			const hits = tagSearch(
 				m.db,
 				keysOf({ dExact: new Set(["칭의"]) }),
@@ -276,7 +276,7 @@ describe("tagSearch — 대표 청크", () => {
 			for (const p of ["old.md", "new.md", "two.md"]) {
 				m.addNote(p);
 				m.addChunk(p, { text: `${p} 본문` });
-				m.addDoctrine(p, "칭의");
+				m.addLexiconKey(p, "doctrine", "칭의");
 			}
 			m.addTag("two.md", "감사"); // two: 3 + 1 = 4점 → 1위
 			m.db.run("UPDATE notes SET mtime = 100 WHERE path = 'old.md'");
@@ -296,6 +296,54 @@ describe("tagSearch — 대표 청크", () => {
 		const m = await makeMiniDb();
 		try {
 			expect(tagSearch(m.db, keysOf({}), appStub)).toEqual([]);
+		} finally {
+			m.close();
+		}
+	});
+});
+
+describe("tagSearch — 렉시콘 범위(lexiconIds)", () => {
+	it("lexiconIds에 없는 렉시콘의 키는 채점하지 않는다 (빈 배열 = 태그 전용, 미지정 = 전체)", async () => {
+		const m = await makeMiniDb();
+		try {
+			for (const [path, lex] of [
+				["a.md", "a"],
+				["b.md", "b"],
+			] as const) {
+				m.addNote(path);
+				m.addChunk(path, { text: "칭의 본문" });
+				m.addLexiconKey(path, lex, "칭의");
+			}
+			m.addNote("t.md");
+			m.addChunk("t.md", { text: "칭의 본문" });
+			m.addTag("t.md", "칭의");
+			const keys = keysOf({
+				dExact: new Set(["칭의"]),
+				tExact: new Set(["칭의"]),
+			});
+			const paths = (hits: ReturnType<typeof tagSearch>) =>
+				hits.map((h) => h.notePath).sort();
+			expect(paths(tagSearch(m.db, keys, appStub, { lexiconIds: ["a"] }))).toEqual(["a.md", "t.md"]);
+			expect(paths(tagSearch(m.db, keys, appStub, { lexiconIds: [] }))).toEqual(["t.md"]);
+			expect(paths(tagSearch(m.db, keys, appStub))).toEqual(["a.md", "b.md", "t.md"]);
+		} finally {
+			m.close();
+		}
+	});
+
+	it("같은 (노트, 키)가 두 렉시콘에 있어도 한 번만 채점한다", async () => {
+		const m = await makeMiniDb();
+		try {
+			m.addNote("n.md");
+			m.addChunk("n.md", { text: "칭의 본문" });
+			m.addLexiconKey("n.md", "a", "칭의");
+			m.addLexiconKey("n.md", "b", "칭의");
+			const hits = tagSearch(m.db, keysOf({ dExact: new Set(["칭의"]) }), appStub, {
+				lexiconIds: ["a", "b"],
+			});
+			expect(hits).toHaveLength(1);
+			expect(hits[0].finalScore).toBeCloseTo(3, 9);
+			expect(hits[0].matchedKeys).toHaveLength(1);
 		} finally {
 			m.close();
 		}

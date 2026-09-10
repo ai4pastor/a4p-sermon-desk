@@ -2,8 +2,9 @@ import type { Database } from "sql.js";
 import {
 	getDistinctTagKeys,
 	getEmbeddedKeys,
+	lexScope,
+	TAG_SCOPE,
 	upsertKeyEmbedding,
-	type KeyEmbeddingTable,
 } from "../db/embeddings";
 import { embedTexts, EMBEDDING_MODEL } from "./openai";
 
@@ -14,7 +15,7 @@ function stripEmoji(key: string): string {
 }
 
 export interface LexiconProgress {
-	phase: "doctrine" | "tag";
+	phase: "lexicon" | "tag";
 	done: number;
 	total: number;
 }
@@ -23,17 +24,17 @@ export type ProgressCallback = (p: LexiconProgress) => void;
 
 async function embedKeys(
 	db: Database,
-	table: KeyEmbeddingTable,
+	scope: string,
 	keys: string[],
 	apiKey: string,
 	model: string,
 	now: number,
-	phase: "doctrine" | "tag",
+	phase: LexiconProgress["phase"],
 	onProgress?: ProgressCallback,
 	synonyms?: Record<string, string[]>,
 	rebuild?: boolean,
 ): Promise<{ embedded: number; skipped: number }> {
-	const existing = rebuild ? new Set<string>() : getEmbeddedKeys(db, table, model);
+	const existing = rebuild ? new Set<string>() : getEmbeddedKeys(db, scope, model);
 	const missing = keys.filter((k) => k && !existing.has(k));
 	const total = missing.length;
 	if (total === 0) {
@@ -55,7 +56,7 @@ async function embedKeys(
 		const batchInputs = inputs.slice(i, i + BATCH);
 		const vecs = await embedTexts(batchInputs, apiKey);
 		for (let j = 0; j < vecs.length; j++) {
-			upsertKeyEmbedding(db, table, batchKeys[j], model, vecs[j], now);
+			upsertKeyEmbedding(db, scope, batchKeys[j], model, vecs[j], now);
 		}
 		done += vecs.length;
 		onProgress?.({ phase, done, total });
@@ -63,24 +64,23 @@ async function embedKeys(
 	return { embedded: total, skipped: keys.length - total };
 }
 
-export async function embedDoctrineKeys(
+/** 렉시콘 키 임베딩(scope "lex:<id>"). 동의어를 함께 임베딩하므로 입력이 바뀐다 — 항상 전체 재생성(rebuild). */
+export async function embedLexiconKeys(
 	db: Database,
-	doctrineKeys: string[],
+	lexicon: { id: string; keywords: string[]; synonyms: Record<string, string[]> },
 	apiKey: string,
-	synonyms: Record<string, string[]>,
 	onProgress?: ProgressCallback,
 ): Promise<{ embedded: number; skipped: number }> {
-	// 동의어를 함께 임베딩하므로 입력이 바뀌었다 — 기존 임베딩을 전체 재생성(rebuild).
 	return embedKeys(
 		db,
-		"doctrine_embeddings",
-		doctrineKeys,
+		lexScope(lexicon.id),
+		lexicon.keywords,
 		apiKey,
 		EMBEDDING_MODEL,
 		Date.now(),
-		"doctrine",
+		"lexicon",
 		onProgress,
-		synonyms,
+		lexicon.synonyms,
 		true,
 	);
 }
@@ -93,7 +93,7 @@ export async function embedTagKeys(
 	const keys = getDistinctTagKeys(db);
 	return embedKeys(
 		db,
-		"tag_embeddings",
+		TAG_SCOPE,
 		keys,
 		apiKey,
 		EMBEDDING_MODEL,

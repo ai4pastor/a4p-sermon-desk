@@ -23,7 +23,11 @@ function bakPath(plugin: Plugin): string {
 	return normalizePath(`${plugin.manifest.dir}/${BAK_FILENAME}`);
 }
 
-export async function loadOrCreateDb(plugin: Plugin): Promise<Database> {
+/** onMigrated: 스키마 마이그레이션이 실행됐을 때(파일에 아직 반영 안 됨) — 호출부가 dirty 표시. */
+export async function loadOrCreateDb(
+	plugin: Plugin,
+	onMigrated?: () => void,
+): Promise<Database> {
 	const SQL = await loadSqlJs();
 	const adapter = plugin.app.vault.adapter;
 	const path = dbPath(plugin);
@@ -60,7 +64,7 @@ export async function loadOrCreateDb(plugin: Plugin): Promise<Database> {
 			const db = new SQL.Database(
 				new Uint8Array(await adapter.readBinary(path)),
 			);
-			runMigrations(db);
+			if (runMigrations(db)) onMigrated?.();
 			return db;
 		} catch (e) {
 			console.error("[a4p-sermon-desk] index.db 로드 실패, 재생성", e);
@@ -81,7 +85,7 @@ export async function loadOrCreateDb(plugin: Plugin): Promise<Database> {
 					const db = new SQL.Database(
 						new Uint8Array(await adapter.readBinary(bak)),
 					);
-					runMigrations(db);
+					if (runMigrations(db)) onMigrated?.();
 					console.warn(
 						"[a4p-sermon-desk] .bak에서 인덱스 복구됨",
 					);
