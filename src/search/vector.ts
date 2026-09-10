@@ -11,6 +11,8 @@ const DEFAULT_TOP_K = 30;
 
 interface CachedEmbedding {
 	chunkId: number;
+	/** 활성 프로파일 0점 노트를 후보 단계에서 거르는 술어용. */
+	notePath: string;
 	vec: Float32Array;
 	norm: number;
 }
@@ -34,16 +36,25 @@ function embeddingsFingerprint(db: Database, model: string): string {
 }
 
 function loadEmbeddings(db: Database, model: string): CachedEmbedding[] {
+	// chunks JOIN으로 노트 경로를 함께 적재 — chunks는 delete+insert라 경로가
+	// 제자리에서 바뀌지 않으므로 기존 COUNT+MAX(rowid) 지문으로 충분하다.
 	const stmt = db.prepare(
-		"SELECT chunk_id, vector FROM embeddings WHERE model = ?",
+		`SELECT e.chunk_id, e.vector, c.note_path
+		 FROM embeddings e JOIN chunks c ON c.id = e.chunk_id
+		 WHERE e.model = ?`,
 	);
 	const entries: CachedEmbedding[] = [];
 	try {
 		stmt.bind([model]);
 		while (stmt.step()) {
-			const row = stmt.get() as [number, Uint8Array];
+			const row = stmt.get() as [number, Uint8Array, string];
 			const vec = blobToFloat(row[1]);
-			entries.push({ chunkId: row[0], vec, norm: norm(vec) });
+			entries.push({
+				chunkId: row[0],
+				notePath: String(row[2]),
+				vec,
+				norm: norm(vec),
+			});
 		}
 	} finally {
 		stmt.free();
@@ -51,11 +62,16 @@ function loadEmbeddings(db: Database, model: string): CachedEmbedding[] {
 	return entries;
 }
 
+/**
+ * @param allow 노트 경로 술어 — false를 반환한 노트의 청크는 topK 자르기 전에
+ *   제외된다(활성 테마 프로파일 0점 노트가 후보 슬롯을 소모하지 않도록).
+ */
 export function vectorSearch(
 	db: Database,
 	queryVector: Float32Array,
 	model: string,
 	topK = DEFAULT_TOP_K,
+	allow?: (notePath: string) => boolean,
 ): VectorMatch[] {
 	const queryNorm = norm(queryVector);
 	if (queryNorm === 0) return [];
@@ -67,6 +83,7 @@ export function vectorSearch(
 
 	const scored: { chunkId: number; similarity: number }[] = [];
 	for (const e of embCache.entries) {
+		if (allow && !allow(e.notePath)) continue;
 		if (e.vec.length !== queryVector.length) continue;
 		if (e.norm === 0) continue;
 		let dot = 0;

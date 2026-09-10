@@ -568,6 +568,20 @@ export const WR_STYLES = `
 	color: var(--text-faint);
 	align-self: center;
 }
+/* 노트 태그(색인 접두에서) — 매칭 근거 칩과 구분되게 무채색·테두리 없음 */
+.wr-tagchips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 3px;
+	margin-top: 2px;
+}
+.wr-tagchip {
+	font-size: 10px;
+	line-height: 1.6;
+	padding: 0 4px;
+	color: var(--text-faint);
+	background: transparent;
+}
 .wr-preview {
 	color: var(--text-muted);
 	font-size: var(--font-ui-smaller);
@@ -588,6 +602,13 @@ export const WR_STYLES = `
 }
 .wr-md p { margin: 0 0 6px; }
 .wr-md p:last-child { margin-bottom: 0; }
+/* 펼침 본문의 첨부 이미지는 그리되 높이를 제한 */
+.wr-fulltext img {
+	display: block;
+	max-width: 100%;
+	max-height: 160px;
+	object-fit: contain;
+}
 .wr-md ul, .wr-md ol { margin: 4px 0 6px; padding-left: 20px; }
 .wr-md li { margin: 2px 0; }
 .wr-md blockquote {

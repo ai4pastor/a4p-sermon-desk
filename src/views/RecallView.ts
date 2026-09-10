@@ -22,6 +22,7 @@ import {
 	makeWeightResolver,
 } from "../settings";
 import { buildCallout, calloutAlias, effectiveInsertMode } from "../insert";
+import { stripTagPrefix } from "../markdown-text";
 import { paragraphAround } from "../paragraph";
 import { preloadMorpheme, tokenize } from "../morpheme";
 import { hybridSearch, HybridHit } from "../search/hybrid";
@@ -1197,7 +1198,7 @@ export class RecallView extends ItemView {
 		const row3 = el.createDiv({ cls: "wr-qs-row" });
 		row3.createSpan({ text: "실행", cls: "wr-qs-label" });
 		row3.createSpan({
-			text: `임베딩 ${s.embeddingUsed ? "✓ 사용" : "✗ 없음(BM25만)"} · 후보 어휘 ${s.candidateK} + 의미 ${s.embeddingUsed ? s.candidateK : 0} → 융합·필터 ${s.rawCount} → 노트당 1개 ${s.shownCount}`,
+			text: `임베딩 ${s.embeddingUsed ? "✓ 사용" : "✗ 없음(BM25만)"} · 후보(테마 0점 제외) 어휘 ${s.candidateK} + 의미 ${s.embeddingUsed ? s.candidateK : 0} → 융합·필터 ${s.rawCount} → 노트당 1개 ${s.shownCount}`,
 			cls: "wr-qs-text",
 		});
 	}
@@ -1497,7 +1498,8 @@ export class RecallView extends ItemView {
 			hit,
 			calloutAlias(hit.noteTitle, hit.heading),
 		);
-		return buildCallout(link, hit.fullText);
+		// 색인용 [태그: …] 접두는 빼고, 나머지 마크다운은 원문 그대로 넣는다.
+		return buildCallout(link, stripTagPrefix(hit.fullText));
 	}
 
 	private insertLink(hit: HybridHit, altKey = false): void {

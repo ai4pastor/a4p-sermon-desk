@@ -309,7 +309,12 @@ export async function runIndex(
 			setMeta(db, FOLDERS_FP_KEY, foldersFingerprint(settings));
 		} else {
 			// 불변 노트의 그룹/가중치도 현재 설정으로 최신화 (자체 트랜잭션 사용).
-			reapplyFolderSettings(db, settings);
+			// records는 방금 색인됐거나 불변인 범위 전체이므로 missing은 0이다.
+			reapplyFolderSettings(
+				db,
+				settings,
+				records.map((r) => r.path),
+			);
 		}
 		if (chunkMorphemeMs.length > 0) {
 			const sorted = [...chunkMorphemeMs].sort((a, b) => a - b);

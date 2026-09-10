@@ -321,6 +321,69 @@ describe.skipIf(!LIVE_DB)("실측 하니스 (실제 index.db 사본)", () => {
 		}
 	});
 
+	it("후보 게이트 A/B (0.11.0) — 활성 프로파일 0점 폴더가 후보 K를 소모하지 않는다", () => {
+		if (!db) throw new Error("db 미초기화");
+		// 시나리오: 쿼리별로 기준 결과(해석기 없음)를 가장 많이 차지한 폴더를 활성
+		// 프로파일에서 0점으로 둔다 — 연구 테마가 180. 설교조각을 0으로 두는 상황의
+		// 재현. 나머지 노트는 DB weight 그대로.
+		const dbWeight = new Map<string, number>();
+		for (const r of db.exec("SELECT path, weight FROM notes")[0]?.values ?? []) {
+			dbWeight.set(String(r[0]), Number(r[1]));
+		}
+		const folderOf = (p: string) => p.slice(0, p.lastIndexOf("/"));
+
+		const lines: string[] = [];
+		let improved = 0;
+		let compared = 0;
+		for (const q of QUERIES) {
+			const tokens = tokensByQuery.get(q.id) ?? [];
+			const emb = embByQuery.get(q.id) ?? null;
+			const baseline = hybridSearch(db, tokens, emb, { topN: 50 });
+			if (baseline.length === 0) {
+				lines.push(`  · ${q.id}: 기준 결과 0 (비교 생략)`);
+				continue;
+			}
+			const byFolder = new Map<string, number>();
+			for (const h of baseline) {
+				const f = folderOf(h.notePath);
+				byFolder.set(f, (byFolder.get(f) ?? 0) + 1);
+			}
+			const folder = [...byFolder.entries()].sort((a, b) => b[1] - a[1])[0][0];
+			const isTarget = (p: string) => p.startsWith(`${folder}/`);
+			const resolver = (p: string) =>
+				isTarget(p) ? 0 : (dbWeight.get(p) ?? 0);
+			// 예전 동작 재현: 후보는 전 노트에서 뽑고 결과에서 0점만 제거.
+			const before = baseline.filter((h) => !isTarget(h.notePath));
+			// 새 동작: 후보 단계에서 0점 노트를 걸러 유효 후보로 K를 채운다.
+			const after = hybridSearch(db, tokens, emb, {
+				topN: 50,
+				resolveWeight: resolver,
+			});
+			expect(after.some((h) => isTarget(h.notePath))).toBe(false);
+			expect(
+				after.length,
+				`${q.id}: 게이트 후 결과가 줄었다`,
+			).toBeGreaterThanOrEqual(before.length);
+			// 살아남은 청크의 점수 구성은 동일 규칙(RRF 순위만 유효 후보 안에서 재배치).
+			for (const h of after) {
+				expect(
+					relClose(h.finalScore, expectedFinal(h, h.noteWeight)),
+					`${q.id} ${h.notePath} 게이트 후 공식 불일치`,
+				).toBe(true);
+			}
+			compared++;
+			if (after.length > before.length) improved++;
+			const removed = baseline.length - before.length;
+			lines.push(
+				`  · ${q.id}: 0점="${baseName(folder)}"(기준 ${baseline.length} 중 ${removed}) → 유효 결과 ${before.length} → ${after.length}${after.length > before.length ? " ▲" : ""}`,
+			);
+		}
+		report.push(
+			`[후보 게이트 A/B] 쿼리별 지배 폴더를 0점으로 — 개선 쿼리 ${improved}/${compared}`,
+			...lines,
+		);
+	});
+
 	it("가중치 A/B — 태그 검색: finalScore = rawScore × weight, 0이면 소멸", () => {
 		if (!db) throw new Error("db 미초기화");
 		const q = QUERIES.find((q) => {

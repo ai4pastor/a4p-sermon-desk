@@ -468,3 +468,75 @@ describe("hybridSearch — 기본 동작", () => {
 		}
 	});
 });
+
+describe("hybridSearch — 프로파일 인지 후보 게이트 (0.11.0)", () => {
+	// 시나리오: zero/ 폴더는 DB(scope)에서는 사용 중(1.5)이지만 활성 프로파일에서는
+	// 0점. 예전에는 이 청크들이 후보 K개를 먼저 차지한 뒤 버려져 on/ 청크가 후보에
+	// 들지 못했다. 이제 후보 단계에서 걸러져 on/ 청크가 전부 살아남아야 한다.
+	function seedBm25(m: Awaited<ReturnType<typeof makeMiniDb>>) {
+		for (let i = 12; i >= 1; i--) {
+			const p = `zero/${i}.md`;
+			m.addNote(p, { weight: 1.5 });
+			m.addChunk(p, { text: "알파", terms: Array<string>(i).fill("알파") });
+		}
+		for (let i = 1; i <= 3; i++) {
+			const p = `on/${i}.md`;
+			m.addNote(p, { weight: 1.5 });
+			m.addChunk(p, { text: "알파", terms: ["알파"] });
+		}
+	}
+
+	it("BM25: 활성 프로파일 0점 노트가 후보 K를 소모하지 않는다", async () => {
+		const m = await makeMiniDb();
+		try {
+			seedBm25(m);
+			const hits = hybridSearch(m.db, ["알파"], null, {
+				candidateK: 10,
+				resolveWeight: (p) => (p.startsWith("zero/") ? 0 : 1),
+			});
+			expect(hits).toHaveLength(3);
+			expect(hits.every((h) => h.notePath.startsWith("on/"))).toBe(true);
+		} finally {
+			m.close();
+		}
+	});
+
+	it("BM25: 해석기 미지정이면 DB weight 기준 전 청크가 후보 (기존 동작 유지)", async () => {
+		const m = await makeMiniDb();
+		try {
+			seedBm25(m);
+			const hits = hybridSearch(m.db, ["알파"], null, { candidateK: 10 });
+			// tf가 큰 zero/12..zero/3이 후보 10개를 채운다.
+			expect(hits).toHaveLength(10);
+			expect(hits.every((h) => h.notePath.startsWith("zero/"))).toBe(true);
+		} finally {
+			m.close();
+		}
+	});
+
+	it("벡터: 활성 프로파일 0점 노트가 후보 K를 소모하지 않는다", async () => {
+		const m = await makeMiniDb();
+		try {
+			for (let i = 1; i <= 12; i++) {
+				const p = `zero/${i}.md`;
+				m.addNote(p, { weight: 1.5 });
+				m.addChunk(p, { text: "x", vec: vecWithCos(0.99) });
+			}
+			for (let i = 1; i <= 3; i++) {
+				const p = `on/${i}.md`;
+				m.addNote(p, { weight: 1.5 });
+				m.addChunk(p, { text: "y", vec: vecWithCos(0.9) });
+			}
+			const hits = hybridSearch(m.db, [], vecOf(1, 0, 0, 0), {
+				candidateK: 10,
+				resolveWeight: (p) => (p.startsWith("zero/") ? 0 : 1),
+			});
+			expect(hits).toHaveLength(3);
+			expect(hits.every((h) => h.notePath.startsWith("on/"))).toBe(true);
+			// 살아남은 히트의 점수 구성은 예전과 같은 규칙(벡터 순위 1~3).
+			expect(hits.map((h) => h.vectorRank).sort()).toEqual([1, 2, 3]);
+		} finally {
+			m.close();
+		}
+	});
+});

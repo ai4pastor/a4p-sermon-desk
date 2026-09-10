@@ -52,15 +52,32 @@ export function scanVault(
 	return records;
 }
 
+/** 색인 범위(scopePaths) 중 notes 테이블에 없는 노트 수 — 배너 안내·재적용 판정용. */
+export function countUnindexed(db: Database, scopePaths: string[]): number {
+	const rows = db.exec("SELECT path FROM notes");
+	const indexed = new Set(
+		rows[0] ? rows[0].values.map((r) => String(r[0])) : [],
+	);
+	let n = 0;
+	for (const p of scopePaths) if (!indexed.has(p)) n++;
+	return n;
+}
+
 /**
  * 경량 재적용 — 전체 재색인 없이 기존 notes의 그룹/가중치만 갱신한다.
  * 텍스트·청크·임베딩은 건드리지 않는다(비파괴). 미매칭/0점 폴더는 weight 0으로
  * 밀어내며(검색에서 사실상 제외), 완전 삭제는 전체 재색인이 처리한다.
+ *
+ * scopePaths = 현재 설정으로 색인 범위에 드는 노트 경로(scanVault 결과). 이 중
+ * notes에 없는 경로(missing)가 있으면 — 0점이던 폴더를 살렸거나 폴더를 새로 추가한
+ * 경우 — 그 내용은 아직 인덱스에 없으므로 폴더 지문을 기록하지 않는다(배너가
+ * "재색인 필요"로 남는다). 지문은 missing이 0일 때만 갱신된다.
  */
 export function reapplyFolderSettings(
 	db: Database,
 	settings: WeightedRecallSettings,
-): { updated: number } {
+	scopePaths: string[],
+): { updated: number; missing: number } {
 	const rows = db.exec("SELECT path FROM notes");
 	const paths = rows[0] ? rows[0].values.map((r) => String(r[0])) : [];
 	db.exec("BEGIN TRANSACTION");
@@ -85,6 +102,9 @@ export function reapplyFolderSettings(
 	} finally {
 		upd.free();
 	}
-	setMeta(db, FOLDERS_FP_KEY, foldersFingerprint(settings));
-	return { updated };
+	const missing = countUnindexed(db, scopePaths);
+	if (missing === 0) {
+		setMeta(db, FOLDERS_FP_KEY, foldersFingerprint(settings));
+	}
+	return { updated, missing };
 }

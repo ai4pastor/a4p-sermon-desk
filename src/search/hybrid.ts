@@ -122,9 +122,17 @@ export function hybridSearch(
 		new Set(queryTerms.filter((t) => t.length > 0)),
 	).slice(0, MAX_QUERY_TERMS);
 
-	const bm25Hits = bm25Search(db, uniqueTerms, candidateK);
+	// 활성 프로파일에서 0점(제외·미매칭 포함)인 노트는 후보 단계에서 미리 거른다 —
+	// 버려질 청크가 후보 K개 슬롯을 차지하면 유효 후보가 모자라 결과가 줄고
+	// 테마 차별화가 약해진다(0.11.0). 아래 SQL 게이트·noteWeight<=0 건너뛰기는
+	// 이중 안전장치로 유지한다.
+	const resolveWeight = opts.resolveWeight;
+	const allow = resolveWeight
+		? (notePath: string) => resolveWeight(notePath) > 0
+		: undefined;
+	const bm25Hits = bm25Search(db, uniqueTerms, candidateK, allow);
 	const vectorHits = queryEmbedding
-		? vectorSearch(db, queryEmbedding, EMBEDDING_MODEL, candidateK)
+		? vectorSearch(db, queryEmbedding, EMBEDDING_MODEL, candidateK, allow)
 		: [];
 
 	if (bm25Hits.length === 0 && vectorHits.length === 0) return [];

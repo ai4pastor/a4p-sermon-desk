@@ -10,7 +10,14 @@ import {
 } from "../search/explain";
 import { type GroupId, type InsertMode, internalToWeight10 } from "../settings";
 import { INSERT_LABEL } from "../insert";
-import { isStopword } from "../morpheme";
+import {
+	buildTermRegex,
+	makeSnippet,
+	parseTagPrefix,
+	splitByTerms,
+	stripInlineMarkdown,
+	stripTagPrefix,
+} from "../markdown-text";
 
 export interface HitListProps {
 	internalHits: HybridHit[];
@@ -256,8 +263,13 @@ function HitCard(props: {
 	}
 
 	const folder = folderOf(hit.notePath);
-	const snippet = makeSnippet(hit.fullText, hit.preview, queryTerms);
+	const snippet = makeSnippet(hit.fullText, queryTerms);
 	const chips = (hit.matchedKeys ?? []).slice(0, MAX_KEY_CHIPS);
+	// 노트 태그(색인 접두에서) — 매칭 근거 칩과 겹치는 것은 빼고 무채색 칩으로.
+	const matchedKeySet = new Set((hit.matchedKeys ?? []).map((k) => k.key));
+	const noteTags = parseTagPrefix(hit.fullText).filter(
+		(t) => !matchedKeySet.has(t),
+	);
 	const ex = showAnalysis ? explainHit(hit, topScore) : null;
 
 	return (
@@ -281,7 +293,9 @@ function HitCard(props: {
 					</div>
 				) : null}
 				{hit.heading ? (
-					<div class="wr-heading">{hit.heading}</div>
+					<div class="wr-heading">
+						{stripInlineMarkdown(hit.heading)}
+					</div>
 				) : null}
 				{(hit.noteHitCount ?? 1) > 1 ? (
 					<span
@@ -314,10 +328,29 @@ function HitCard(props: {
 						) : null}
 					</div>
 				) : null}
+				{noteTags.length > 0 ? (
+					<div class="wr-tagchips">
+						{noteTags.slice(0, MAX_TAG_CHIPS).map((t) => (
+							<span
+								key={t}
+								class="wr-tagchip"
+								title={`노트 태그: ${t}`}
+							>
+								#{t}
+							</span>
+						))}
+						{noteTags.length > MAX_TAG_CHIPS ? (
+							<span class="wr-keychip-more">
+								+{noteTags.length - MAX_TAG_CHIPS}
+							</span>
+						) : null}
+					</div>
+				) : null}
 				{eagerRender || expanded ? (
 					<MarkdownPanel
-						text={hit.fullText}
+						text={stripTagPrefix(hit.fullText)}
 						sourcePath={hit.notePath}
+						terms={queryTerms}
 						app={app}
 						component={component}
 						hidden={!expanded}
@@ -642,11 +675,15 @@ function WhyTag(props: {
 function MarkdownPanel(props: {
 	text: string;
 	sourcePath: string;
+	/** 렌더 후 <mark>로 표시할 검색어. */
+	terms: string[];
 	app: App;
 	component: Component;
 	hidden: boolean;
 }) {
 	const ref = useRef<HTMLDivElement>(null);
+	// 배열 identity는 매 렌더 바뀌므로 문자열 키로 의존성을 잡는다.
+	const termsKey = props.terms.join("");
 	useEffect(() => {
 		const el = ref.current;
 		if (!el) return;
@@ -661,6 +698,7 @@ function MarkdownPanel(props: {
 		)
 			.then(() => {
 				if (cancelled) return;
+				highlightRendered(temp, props.terms);
 				el.empty();
 				while (temp.firstChild) {
 					el.appendChild(temp.firstChild);
@@ -671,7 +709,7 @@ function MarkdownPanel(props: {
 			cancelled = true;
 			el.empty();
 		};
-	}, [props.text, props.sourcePath]);
+	}, [props.text, props.sourcePath, termsKey]);
 	return (
 		<div
 			class={`wr-fulltext wr-md${props.hidden ? " wr-hidden" : ""}`}
@@ -680,7 +718,42 @@ function MarkdownPanel(props: {
 	);
 }
 
+/**
+ * 렌더된 마크다운의 텍스트 노드에서 검색어를 <mark>로 감싼다.
+ * 코드·이미 표시된 곳은 건너뛰고, 링크 텍스트(위키링크 별칭)는 내용이므로 포함.
+ */
+function highlightRendered(root: HTMLElement, terms: string[]): void {
+	const re = buildTermRegex(terms);
+	if (!re) return;
+	const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+	const targets: Text[] = [];
+	let node: Node | null;
+	while ((node = walker.nextNode())) {
+		const t = node as Text;
+		if (!t.nodeValue) continue;
+		if (t.parentElement?.closest("code, pre, mark")) continue;
+		targets.push(t);
+	}
+	for (const t of targets) {
+		const parts = splitByTerms(t.nodeValue ?? "", re);
+		if (!parts.some((p) => p.hit)) continue;
+		const frag = document.createDocumentFragment();
+		for (const p of parts) {
+			if (p.hit) {
+				const mark = document.createElement("mark");
+				mark.className = "wr-mark";
+				mark.textContent = p.text;
+				frag.appendChild(mark);
+			} else {
+				frag.appendChild(document.createTextNode(p.text));
+			}
+		}
+		t.replaceWith(frag);
+	}
+}
+
 const MAX_KEY_CHIPS = 6;
+const MAX_TAG_CHIPS = 5;
 
 const KEY_KIND_LABEL: Record<string, string> = {
 	dExact: "교리 키워드와 정확히 일치",
@@ -701,52 +774,17 @@ function shortFolder(folder: string): string {
 	return parts.length <= 2 ? folder : `…/${parts.slice(-2).join("/")}`;
 }
 
-const SNIPPET_LEN = 160;
-
-/**
- * 미리보기를 검색어가 실제 매칭된 부근으로 만든다. 매칭 토큰이 본문 어디에도
- * 없으면(예: 태그 검색에서 키가 프론트매터에만 있는 경우) 기존 preview
- * (본문 앞부분)로 폴백. 하이라이트가 보이지 않는 무의미한 스니펫 방지.
- */
-export function makeSnippet(
-	fullText: string,
-	preview: string,
-	terms: string[],
-): string {
-	const filtered = terms.filter((t) => t.length >= 2 && !isStopword(t));
-	if (!fullText || filtered.length === 0) return preview;
-	const lower = fullText.toLowerCase();
-	let first = -1;
-	for (const t of filtered) {
-		const i = lower.indexOf(t.toLowerCase());
-		if (i >= 0 && (first < 0 || i < first)) first = i;
-	}
-	if (first < 0) return preview;
-	const start = Math.max(0, first - Math.floor(SNIPPET_LEN / 3));
-	const end = Math.min(fullText.length, start + SNIPPET_LEN);
-	return (
-		(start > 0 ? "…" : "") +
-		fullText.slice(start, end) +
-		(end < fullText.length ? "…" : "")
-	);
-}
-
+/** 평문 텍스트에서 검색어를 <mark>로 감싼 JSX 조각. (스니펫 생성은 markdown-text.makeSnippet) */
 export function highlightText(text: string, terms: string[]) {
-	const filtered = terms.filter((t) => t.length >= 2 && !isStopword(t));
-	if (filtered.length === 0) return text;
-	const escaped = filtered
-		.slice()
-		.sort((a, b) => b.length - a.length)
-		.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-	const re = new RegExp(`(${escaped.join("|")})`, "gi");
-	const parts = text.split(re);
-	return parts.map((p, i) =>
-		i % 2 === 1 ? (
+	const re = buildTermRegex(terms);
+	if (!re) return text;
+	return splitByTerms(text, re).map((p, i) =>
+		p.hit ? (
 			<mark key={i} class="wr-mark">
-				{p}
+				{p.text}
 			</mark>
 		) : (
-			<span key={i}>{p}</span>
+			<span key={i}>{p.text}</span>
 		),
 	);
 }

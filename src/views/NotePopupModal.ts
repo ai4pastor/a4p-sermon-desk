@@ -10,6 +10,7 @@ import {
 import type { HybridHit } from "../search/hybrid";
 import type { InsertMode } from "../settings";
 import { INSERT_LABEL } from "../insert";
+import { stripInlineMarkdown, toPlainText } from "../markdown-text";
 
 export interface PopupHost {
 	app: App;
@@ -22,18 +23,6 @@ export interface PopupHost {
 /** 공백을 압축하고 NFC로 정규화한다 (앵커 매칭용). */
 function normalizeText(text: string): string {
 	return text.replace(/\s+/g, " ").trim().normalize("NFC");
-}
-
-/** 마크다운 토큰을 걷어내 렌더된 텍스트와 비교 가능한 스니펫을 만든다. */
-function normalizeSnippet(text: string): string {
-	return normalizeText(
-		text
-			.replace(/^#{1,6}\s+/gm, "")
-			.replace(/[*_`~]/g, "")
-			.replace(/^>\s*/gm, "")
-			.replace(/\[\[([^\]|]+)\|?([^\]]*)\]\]/g, (_m, p1, p2) => p2 || p1)
-			.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1"),
-	);
 }
 
 export class NotePopupModal extends Modal {
@@ -65,7 +54,7 @@ export class NotePopupModal extends Modal {
 		if (this.hit.heading) {
 			titleRow.createSpan({
 				cls: "wr-popup-chip",
-				text: this.hit.heading,
+				text: stripInlineMarkdown(this.hit.heading),
 			});
 		}
 		header.createDiv({ cls: "wr-popup-path", text: this.hit.notePath });
@@ -159,7 +148,7 @@ export class NotePopupModal extends Modal {
 	/** 이 hit이 가리키는 청크 위치의 요소를 찾는다. heading 우선, 다음 본문 스니펫. */
 	private findAnchor(body: HTMLElement): HTMLElement | null {
 		if (this.hit.heading) {
-			const target = normalizeText(this.hit.heading);
+			const target = normalizeText(stripInlineMarkdown(this.hit.heading));
 			const headings = body.querySelectorAll<HTMLElement>(
 				"h1, h2, h3, h4, h5, h6",
 			);
@@ -169,15 +158,27 @@ export class NotePopupModal extends Modal {
 				}
 			}
 		}
+		// 청크를 평문 줄로 나눠 앞의 몇 줄을 탐침으로 — 예전엔 "[태그: …]"·"[!quote]"로
+		// 시작하는 단일 탐침이라 대부분 청크에서 위치를 못 찾았다. 콜아웃 제목은
+		// .callout-title-inner에 렌더되므로 본문 줄이 p/li에서 맞는다.
 		const source = this.hit.fullText || this.hit.preview;
-		const snippet = normalizeSnippet(source).slice(0, 40);
-		if (snippet.length < 8) return null;
-		const blocks = body.querySelectorAll<HTMLElement>(
-			"p, li, blockquote, h1, h2, h3, h4, h5, h6, pre, td",
+		const probes = toPlainText(source)
+			.split("\n")
+			.map((l) => normalizeText(l))
+			.filter((l) => l.length >= 8)
+			.slice(0, 5)
+			.map((l) => l.slice(0, 40));
+		if (probes.length === 0) return null;
+		const blocks = Array.from(
+			body.querySelectorAll<HTMLElement>(
+				"p, li, blockquote, h1, h2, h3, h4, h5, h6, pre, td",
+			),
 		);
-		for (const el of Array.from(blocks)) {
-			if (normalizeText(el.textContent ?? "").includes(snippet)) {
-				return el;
+		for (const probe of probes) {
+			for (const el of blocks) {
+				if (normalizeText(el.textContent ?? "").includes(probe)) {
+					return el;
+				}
 			}
 		}
 		return null;

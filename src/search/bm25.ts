@@ -12,6 +12,8 @@ interface Bm25Stats {
 	N: number;
 	avgdl: number;
 	dlMap: Map<number, number>;
+	/** 청크 id → 노트 경로. 활성 프로파일 0점 노트를 후보 단계에서 거르는 술어용. */
+	notePath: Map<number, string>;
 }
 
 // 문서 통계(N·avgdl·문서길이 맵) 캐시 — 매 쿼리 전체 집계를 피한다.
@@ -43,13 +45,26 @@ function loadStats(db: Database): Bm25Stats {
 			dlMap.set(Number(row[0]), Number(row[1]));
 		}
 	}
-	return { N, avgdl: N > 0 ? totalTerms / N : 0, dlMap };
+	const notePath = new Map<number, string>();
+	const npRes = db.exec("SELECT id, note_path FROM chunks");
+	if (npRes[0]) {
+		for (const row of npRes[0].values) {
+			notePath.set(Number(row[0]), String(row[1]));
+		}
+	}
+	return { N, avgdl: N > 0 ? totalTerms / N : 0, dlMap, notePath };
 }
 
+/**
+ * @param allow 노트 경로 술어 — false를 반환한 노트의 청크는 topK 자르기 전에
+ *   제외된다(활성 테마 프로파일 0점 노트가 후보 슬롯을 소모하지 않도록).
+ *   미지정 시 전 청크가 후보. df/idf는 항상 전 청크 기준(프로파일 간 안정).
+ */
 export function bm25Search(
 	db: Database,
 	queryTerms: string[],
 	topK: number,
+	allow?: (notePath: string) => boolean,
 ): BM25Hit[] {
 	const uniqueTerms = Array.from(new Set(queryTerms.filter((t) => t.length > 0)));
 	if (uniqueTerms.length === 0) return [];
@@ -58,7 +73,7 @@ export function bm25Search(
 	if (!statsCache || statsCache.fp !== fp) {
 		statsCache = { fp, stats: loadStats(db) };
 	}
-	const { N, avgdl, dlMap } = statsCache.stats;
+	const { N, avgdl, dlMap, notePath } = statsCache.stats;
 	if (N === 0 || avgdl === 0) return [];
 
 	const dfMap = new Map<string, number>();
@@ -87,6 +102,7 @@ export function bm25Search(
 	if (tfRes[0]) {
 		for (const row of tfRes[0].values) {
 			const chunkId = Number(row[0]);
+			if (allow && !allow(notePath.get(chunkId) ?? "")) continue;
 			const term = row[1] as string;
 			const tf = Number(row[2]);
 			const df = dfMap.get(term) ?? 0;

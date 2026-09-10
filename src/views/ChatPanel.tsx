@@ -4,7 +4,8 @@ import { App, Component, MarkdownRenderer, Notice } from "obsidian";
 import type { HybridHit } from "../search/hybrid";
 import { parseCiteNumbers, type ChatMessage } from "../chat/rag";
 import { explainHit } from "../search/explain";
-import { ScoreBar, highlightText, makeSnippet } from "./HitList";
+import { ScoreBar, highlightText } from "./HitList";
+import { makeSnippet, stripInlineMarkdown } from "../markdown-text";
 import { INSERT_LABEL } from "../insert";
 import type { InsertMode } from "../settings";
 
@@ -317,7 +318,7 @@ function SourceCard(props: {
 	const group = hit.categoryId === "external" ? "external" : "internal";
 	// 매칭 단어 부근 스니펫 — 검색 카드와 같은 규칙(trace가 없으면 앞부분).
 	const terms = hit.trace?.matchedTerms ?? [];
-	const snippet = makeSnippet(hit.fullText, hit.preview, terms);
+	const snippet = makeSnippet(hit.fullText, terms);
 	const ex = props.showAnalysis ? explainHit(hit, props.topScore) : null;
 	return (
 		<div
@@ -329,7 +330,9 @@ function SourceCard(props: {
 			<div class="wr-chat-source-body">
 				<div class="wr-chat-source-title">{hit.noteTitle}</div>
 				{hit.heading ? (
-					<div class="wr-chat-source-heading">{hit.heading}</div>
+					<div class="wr-chat-source-heading">
+						{stripInlineMarkdown(hit.heading)}
+					</div>
 				) : null}
 				{snippet ? (
 					<div class="wr-chat-source-snippet">

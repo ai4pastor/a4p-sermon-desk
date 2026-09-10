@@ -53,6 +53,7 @@ import {
 	getMaxEmbeddedAt,
 } from "./db/embeddings";
 import { getMeta, FOLDERS_FP_KEY, PROTECTED_FP_KEY } from "./db/meta";
+import { countUnindexed, scanVault } from "./indexer/scanner";
 import {
 	deriveProtectedTerms,
 	parseProtectedInput,
@@ -958,11 +959,22 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 			? getMeta(db, FOLDERS_FP_KEY) ===
 				foldersFingerprint(this.plugin.settings)
 			: false;
+		// 범위에 들어왔지만 인덱스에 없는 노트(0점 폴더 부활·폴더 추가) — 지문이
+		// 맞아 보여도 이 수가 0이 아니면 그 내용은 검색되지 않는다.
+		const missing = db
+			? countUnindexed(
+					db,
+					scanVault(this.app, this.plugin.settings).map((r) => r.path),
+				)
+			: 0;
 		const banner = containerEl.createDiv({ cls: "wr-sync-banner" });
 		banner.createEl("p", {
-			text: inSync
-				? "✅ 폴더 설정이 검색 인덱스와 일치합니다. 테마 전환·점수 조정은 버튼 없이 즉시 반영됩니다."
-				: "⚠️ 인덱스 반영이 필요한 변경입니다(폴더 추가/제거·그룹 이동·0점↔사용 전환·제외 폴더). 아래 ‘변경사항 적용’을 누르세요. 0점이던 폴더를 새로 살렸거나 폴더를 추가했다면 [재색인 (변경분만)]까지 눌러야 그 폴더 내용이 검색됩니다.",
+			text:
+				missing > 0
+					? `⚠️ 검색 범위에 들어왔지만 아직 색인되지 않은 노트가 ${missing}개 있습니다(0점이던 폴더를 살렸거나 폴더를 추가한 경우). [재색인 (변경분만)]을 눌러야 그 내용이 검색됩니다 — ‘변경사항 적용’만으로는 색인되지 않습니다.`
+					: inSync
+						? "✅ 폴더 설정이 검색 인덱스와 일치합니다. 테마 전환·점수 조정은 버튼 없이 즉시 반영됩니다."
+						: "⚠️ 인덱스 반영이 필요한 변경입니다(폴더 제거·그룹 이동·사용→0점 전환·제외 폴더). 아래 ‘변경사항 적용’을 누르세요.",
 			cls: "setting-item-description",
 		});
 		new Setting(banner)

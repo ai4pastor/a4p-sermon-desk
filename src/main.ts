@@ -18,7 +18,7 @@ import {
 	deriveProtectedTerms,
 	protectedFingerprint,
 } from "./morpheme/protected";
-import { reapplyFolderSettings } from "./indexer/scanner";
+import { reapplyFolderSettings, scanVault } from "./indexer/scanner";
 import { embedMissingChunks } from "./embedder/embed-all";
 import { embedTexts } from "./embedder/openai";
 import { bm25Search } from "./search/bm25";
@@ -176,11 +176,15 @@ export default class WeightedRecallPlugin extends Plugin {
 		if (this.migratedThisLoad) {
 			try {
 				this.dbDirty = true;
-				const r = reapplyFolderSettings(this.db, this.settings);
+				const r = reapplyFolderSettings(
+					this.db,
+					this.settings,
+					scanVault(this.app, this.settings).map((x) => x.path),
+				);
 				await this.persistDb();
 				if (__DEV__) {
 					console.log(
-						`[a4p-sermon-desk] 마이그레이션 후 폴더 재적용: ${r.updated} notes`,
+						`[a4p-sermon-desk] 마이그레이션 후 폴더 재적용: ${r.updated} notes, 미색인 ${r.missing}`,
 					);
 				}
 			} catch (e) {
@@ -770,11 +774,25 @@ export default class WeightedRecallPlugin extends Plugin {
 			}
 			try {
 				this.dbDirty = true;
-				const r = reapplyFolderSettings(this.db, this.settings);
-				await this.persistDb();
-				new Notice(
-					`A4P Sermon Desk: 폴더 설정 재적용 — ${r.updated}개 노트`,
+				const scopePaths = scanVault(this.app, this.settings).map(
+					(r) => r.path,
 				);
+				const r = reapplyFolderSettings(
+					this.db,
+					this.settings,
+					scopePaths,
+				);
+				await this.persistDb();
+				if (r.missing > 0) {
+					new Notice(
+						`A4P Sermon Desk: 폴더 설정 재적용 — ${r.updated}개 노트. ⚠️ 새로 검색 범위에 들어온 노트 ${r.missing}개는 아직 색인되지 않았습니다 — [재색인 (변경분만)]을 눌러주세요.`,
+						10000,
+					);
+				} else {
+					new Notice(
+						`A4P Sermon Desk: 폴더 설정 재적용 — ${r.updated}개 노트`,
+					);
+				}
 			} catch (e) {
 				new Notice(
 					`A4P Sermon Desk: 재적용 실패 — ${(e as Error).message}`,
