@@ -1134,6 +1134,9 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 					scanVault(this.app, this.plugin.settings).map((r) => r.path),
 				)
 			: 0;
+		// 배너 문구가 권하는 버튼만 강조(CTA) — 문구와 색이 어긋나지 않게. 정상이면 강조 없음.
+		const recommend: "reindex" | "reapply" | null =
+			missing > 0 ? "reindex" : !inSync ? "reapply" : null;
 		const banner = containerEl.createDiv({ cls: "wr-sync-banner" });
 		banner.createEl("p", {
 			text:
@@ -1147,25 +1150,30 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 		new Setting(banner)
 			.addButton((btn) => {
 				btn.setButtonText("변경사항 적용 (재색인 없이)")
-					.setCta()
+					.setTooltip(
+						"폴더의 그룹·제거·0점 전환·제외 변경만 인덱스에 반영합니다. 노트를 다시 읽지 않아 수 초면 끝나고 API 비용이 없습니다. 새로 검색 범위에 들어온 노트는 여기서 색인되지 않습니다.",
+					)
 					.onClick(async () => {
 						await this.plugin.runReapply();
 						this.display();
 					});
+				if (recommend === "reapply") btn.setCta();
 			})
 			.addButton((btn) => {
 				btn.setButtonText("재색인 (변경분만)")
 					.setTooltip(
-						"바뀐 노트만 다시 읽습니다. 처음이거나 업그레이드 직후엔 자동으로 전체를 다시 만듭니다.",
+						"새로 만들거나 고친 노트만 다시 읽고, 사라진 노트의 색인은 정리합니다. 다시 살린 폴더·새 폴더의 노트도 여기서 색인됩니다. 처음이거나 업그레이드 직후엔 자동으로 전체를 다시 만듭니다.",
 					)
 					.onClick(async () => {
 						btn.setButtonText("재색인 중…").setDisabled(true);
 						await this.plugin.runReindex();
 						this.display();
 					});
+				if (recommend === "reindex") btn.setCta();
 			})
 			.addButton((btn) => {
 				btn.setButtonText("강제 전체 재색인")
+					.setWarning()
 					.setTooltip(
 						"인덱스를 전부 지우고 다시 만듭니다. 임베딩도 전량 재생성되어 API 비용이 발생합니다.",
 					)
