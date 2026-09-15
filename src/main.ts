@@ -1,4 +1,11 @@
-import { type Editor, Notice, Plugin } from "obsidian";
+import {
+	type Editor,
+	Notice,
+	Plugin,
+	TAbstractFile,
+	TFile,
+	TFolder,
+} from "obsidian";
 import { paragraphAround } from "./paragraph";
 import type { Database } from "sql.js";
 import {
@@ -15,13 +22,24 @@ import { createIdeaMemo } from "./idea-memo-create";
 import { loadOrCreateDb, saveDb } from "./db/persistence";
 import { retokenizeAllChunks, runIndex } from "./indexer/indexer";
 import {
+	deleteNoteRows,
+	deleteNotesUnderFolder,
+	listNotesUnderFolder,
+	renameNoteRows,
+} from "./indexer/note-rows";
+import {
 	deriveProtectedTerms,
 	protectedFingerprint,
 } from "./morpheme/protected";
-import { reapplyFolderSettings, scanVault } from "./indexer/scanner";
+import {
+	categorizeFile,
+	reapplyFolderSettings,
+	scanVault,
+} from "./indexer/scanner";
 import { embedMissingChunks } from "./embedder/embed-all";
 import { embedTexts } from "./embedder/openai";
-import { bm25Search } from "./search/bm25";
+import { bm25Search, resetBm25Cache } from "./search/bm25";
+import { resetVectorCache } from "./search/vector";
 import { hybridSearch } from "./search/hybrid";
 import {
 	RecallView,
@@ -60,6 +78,14 @@ function countChunks(db: Database): number {
 	return row ? Number(row.values[0][0]) : 0;
 }
 
+/** 볼트 삭제·이름 변경 이벤트 — 색인 행에 즉시 반영할 최소 정보. */
+type VaultOp =
+	| { kind: "delete"; path: string; isFolder: boolean }
+	| { kind: "rename"; oldPath: string; newPath: string; isFolder: boolean };
+
+/** 삭제·이름 변경 후 index.db(설치본 100MB급) 저장을 묶는 지연 시간. */
+const VAULT_SAVE_DELAY_MS = 30_000;
+
 export default class WeightedRecallPlugin extends Plugin {
 	settings: WeightedRecallSettings = DEFAULT_SETTINGS;
 	db: Database | null = null;
@@ -68,6 +94,10 @@ export default class WeightedRecallPlugin extends Plugin {
 	private migratedThisLoad = false;
 	/** 마지막 저장 이후 DB 변경 여부 — unload 시 불필요한 재저장을 막는다 */
 	private dbDirty = false;
+	/** busy(재색인 등) 중 들어온 볼트 삭제·이름 변경 — 작업이 끝난 뒤 순서대로 반영 */
+	private pendingVaultOps: VaultOp[] = [];
+	/** 지연 저장 타이머 — 삭제·이름 변경마다 index.db를 다시 쓰지 않도록 묶는다 */
+	private saveTimer: number | null = null;
 
 	async onload() {
 		await this.loadSettings();
@@ -165,6 +195,16 @@ export default class WeightedRecallPlugin extends Plugin {
 		);
 
 		this.db = await loadOrCreateDb(this, () => this.markDbDirty());
+		// 볼트 삭제·이름 변경을 색인에 즉시 반영(행만 정리, 저장은 지연). 생성·수정은
+		// 형태소·임베딩 비용 때문에 [재색인 (변경분만)] 버튼이 담당한다.
+		this.registerEvent(
+			this.app.vault.on("delete", (file) => this.onVaultDelete(file)),
+		);
+		this.registerEvent(
+			this.app.vault.on("rename", (file, oldPath) =>
+				this.onVaultRename(file, oldPath),
+			),
+		);
 		if (__DEV__) {
 			const v = this.db.exec(
 				"SELECT value FROM meta WHERE key='schema_version'",
@@ -518,7 +558,127 @@ export default class WeightedRecallPlugin extends Plugin {
 			await fn();
 		} finally {
 			this.busy = false;
+			this.flushPendingVaultOps();
 		}
+	}
+
+	// ── 볼트 삭제·이름 변경 실시간 반영 ──────────────────────────────
+
+	private onVaultDelete(file: TAbstractFile): void {
+		if (file instanceof TFolder) {
+			this.queueVaultOp({ kind: "delete", path: file.path, isFolder: true });
+		} else if (file instanceof TFile && file.extension === "md") {
+			this.queueVaultOp({ kind: "delete", path: file.path, isFolder: false });
+		}
+	}
+
+	private onVaultRename(file: TAbstractFile, oldPath: string): void {
+		if (file instanceof TFolder) {
+			this.queueVaultOp({
+				kind: "rename",
+				oldPath,
+				newPath: file.path,
+				isFolder: true,
+			});
+		} else if (file instanceof TFile) {
+			if (file.extension === "md") {
+				this.queueVaultOp({
+					kind: "rename",
+					oldPath,
+					newPath: file.path,
+					isFolder: false,
+				});
+			} else if (oldPath.endsWith(".md")) {
+				// .md → 다른 확장자: 더는 색인 대상이 아니다
+				this.queueVaultOp({ kind: "delete", path: oldPath, isFolder: false });
+			}
+		}
+	}
+
+	/** busy(재색인 등 열린 트랜잭션) 중이면 대기열에, 아니면 즉시 반영. */
+	private queueVaultOp(op: VaultOp): void {
+		if (this.busy) {
+			this.pendingVaultOps.push(op);
+			return;
+		}
+		this.applyVaultOps([op]);
+	}
+
+	private flushPendingVaultOps(): void {
+		if (this.pendingVaultOps.length === 0) return;
+		const ops = this.pendingVaultOps;
+		this.pendingVaultOps = [];
+		this.applyVaultOps(ops);
+	}
+
+	/**
+	 * 행만 정리하고(ms 단위) 저장은 묶는다. 모든 연산은 멱등 — 옵시디언이 폴더와
+	 * 하위 파일 이벤트를 둘 다 내도 두 번째는 no-op.
+	 */
+	private applyVaultOps(ops: VaultOp[]): void {
+		const db = this.db;
+		if (!db) return;
+		let changed = 0;
+		try {
+			for (const op of ops) changed += this.applyVaultOp(db, op);
+		} catch (e) {
+			console.error(
+				"[a4p-sermon-desk] vault event → index update failed",
+				e,
+			);
+		}
+		if (changed === 0) return;
+		// 이름 변경은 chunks.note_path를 제자리에서 바꿔 COUNT+MAX 지문이 안 변한다
+		resetBm25Cache();
+		resetVectorCache();
+		this.dbDirty = true;
+		this.scheduleSave();
+	}
+
+	/** @returns 실제로 정리·이동한 노트 수 */
+	private applyVaultOp(db: Database, op: VaultOp): number {
+		if (op.kind === "delete") {
+			if (op.isFolder) return deleteNotesUnderFolder(db, op.path).length;
+			return deleteNoteRows(db, [op.path]);
+		}
+		if (!op.isFolder) {
+			return renameNoteRows(
+				db,
+				op.oldPath,
+				op.newPath,
+				categorizeFile(op.newPath, this.settings),
+			)
+				? 1
+				: 0;
+		}
+		const oldPrefix = op.oldPath.endsWith("/") ? op.oldPath : op.oldPath + "/";
+		const newPrefix = op.newPath.endsWith("/") ? op.newPath : op.newPath + "/";
+		let n = 0;
+		for (const oldP of listNotesUnderFolder(db, op.oldPath)) {
+			const newP = newPrefix + oldP.slice(oldPrefix.length);
+			if (
+				renameNoteRows(db, oldP, newP, categorizeFile(newP, this.settings))
+			) {
+				n++;
+			}
+		}
+		return n;
+	}
+
+	/** 지연 저장 — 마지막 변경 후 일정 시간 뒤 한 번만 index.db를 쓴다(busy면 다시 미룸). */
+	private scheduleSave(): void {
+		if (this.saveTimer !== null) window.clearTimeout(this.saveTimer);
+		this.saveTimer = window.setTimeout(() => {
+			this.saveTimer = null;
+			if (this.busy) {
+				this.scheduleSave();
+				return;
+			}
+			if (!this.dbDirty) return;
+			this.persistDb().catch((e) =>
+				console.error("[a4p-sermon-desk] deferred save failed", e),
+			);
+		}, VAULT_SAVE_DELAY_MS);
 	}
 
 	private async runEmbedding(notifyMissingKey: boolean): Promise<void> {
@@ -570,6 +730,10 @@ export default class WeightedRecallPlugin extends Plugin {
 	}
 
 	async onunload() {
+		if (this.saveTimer !== null) {
+			window.clearTimeout(this.saveTimer);
+			this.saveTimer = null;
+		}
 		if (this.db) {
 			// 변경분이 없으면 저장 생략 — 리로드 시 새 인스턴스의 onload와
 			// 경합해 index.db가 유실되는 것을 막고, 불필요한 대용량 쓰기도 줄인다

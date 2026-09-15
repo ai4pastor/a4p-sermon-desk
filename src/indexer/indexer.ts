@@ -18,6 +18,7 @@ import { parseFile } from "./parser";
 import { chunkBody } from "./chunker";
 import { tokenize } from "../morpheme";
 import { toIndexLexicons } from "./note-keys";
+import { deleteNoteRows } from "./note-rows";
 
 /**
  * 토큰화/색인 알고리즘 버전 — heading 포함(0.2.0) + NFC 정규화(0.3.0) = 2.
@@ -65,26 +66,6 @@ export interface IndexOptions {
 	force?: boolean;
 	/** 현재 보호 단어 지문 — 전체 재색인이면 모든 청크가 새 규칙으로 토큰화되므로 기록. */
 	protectedFp?: string;
-}
-
-/** 한 노트의 색인 흔적을 자식→부모 순으로 제거 (FK OFF 세션에서도 안전). */
-function deleteNoteRows(db: Database, paths: string[]): void {
-	if (paths.length === 0) return;
-	const stmts = [
-		"DELETE FROM chunk_terms WHERE chunk_id IN (SELECT id FROM chunks WHERE note_path = ?)",
-		"DELETE FROM embeddings WHERE chunk_id IN (SELECT id FROM chunks WHERE note_path = ?)",
-		"DELETE FROM chunks WHERE note_path = ?",
-		"DELETE FROM note_lexicon_keys WHERE note_path = ?",
-		"DELETE FROM note_tags WHERE note_path = ?",
-		"DELETE FROM notes WHERE path = ?",
-	].map((sql) => db.prepare(sql));
-	try {
-		for (const p of paths) {
-			for (const s of stmts) s.run([p]);
-		}
-	} finally {
-		for (const s of stmts) s.free();
-	}
 }
 
 export async function runIndex(

@@ -20,11 +20,18 @@ interface CachedEmbedding {
 // 청크 임베딩 메모리 캐시 — 검색마다 전량 blob 읽기·변환을 피한다.
 // chunks/embeddings는 UPDATE 없이 delete+insert(AUTOINCREMENT)이므로
 // COUNT+MAX(rowid) 지문으로 모든 변경이 감지된다.
+// 예외: 노트 이름 변경은 chunks.note_path를 제자리에서 UPDATE해 지문이 안 바뀌므로
+// main이 resetVectorCache()로 명시 무효화한다.
 let embCache: {
 	model: string;
 	fp: string;
 	entries: CachedEmbedding[];
 } | null = null;
+
+/** 캐시 강제 무효화 — 지문이 바뀌지 않는 제자리 UPDATE(이름 변경) 뒤에 호출. */
+export function resetVectorCache(): void {
+	embCache = null;
+}
 
 function embeddingsFingerprint(db: Database, model: string): string {
 	const r = db.exec(

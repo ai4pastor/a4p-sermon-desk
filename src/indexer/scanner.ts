@@ -66,7 +66,8 @@ export function countUnindexed(db: Database, scopePaths: string[]): number {
 /**
  * 경량 재적용 — 전체 재색인 없이 기존 notes의 그룹/가중치만 갱신한다.
  * 텍스트·청크·임베딩은 건드리지 않는다(비파괴). 미매칭/0점 폴더는 weight 0으로
- * 밀어내며(검색에서 사실상 제외), 완전 삭제는 전체 재색인이 처리한다.
+ * 밀어내며(검색에서 사실상 제외), 행 삭제는 재색인(변경분·전체)과 볼트
+ * 삭제·이름 변경 이벤트(main의 vault 리스너)가 처리한다.
  *
  * scopePaths = 현재 설정으로 색인 범위에 드는 노트 경로(scanVault 결과). 이 중
  * notes에 없는 경로(missing)가 있으면 — 0점이던 폴더를 살렸거나 폴더를 새로 추가한

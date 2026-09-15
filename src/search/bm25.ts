@@ -19,7 +19,14 @@ interface Bm25Stats {
 // 문서 통계(N·avgdl·문서길이 맵) 캐시 — 매 쿼리 전체 집계를 피한다.
 // chunks는 UPDATE 없이 delete+insert(AUTOINCREMENT)라 COUNT+MAX(id)로 감지되고,
 // chunk_terms만 바뀌는 경우(보호 단어 재계산)는 chunk_terms COUNT로 감지된다.
+// 예외: 노트 이름 변경은 chunks.note_path를 제자리에서 UPDATE해 지문이 안 바뀌므로
+// main이 resetBm25Cache()로 명시 무효화한다.
 let statsCache: { fp: string; stats: Bm25Stats } | null = null;
+
+/** 캐시 강제 무효화 — 지문이 바뀌지 않는 제자리 UPDATE(이름 변경) 뒤에 호출. */
+export function resetBm25Cache(): void {
+	statsCache = null;
+}
 
 function chunksFingerprint(db: Database): string {
 	const r = db.exec(
