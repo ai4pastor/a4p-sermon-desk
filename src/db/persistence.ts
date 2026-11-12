@@ -2,6 +2,7 @@ import { Notice, Plugin, normalizePath } from "obsidian";
 import type { Database } from "sql.js";
 import { loadSqlJs } from "./sqljs-loader";
 import { runMigrations } from "./migrate";
+import { compactDbFile } from "./compact";
 
 const DB_FILENAME = "index.db";
 const TMP_PREFIX = "index.db.tmp";
@@ -107,27 +108,90 @@ export async function loadOrCreateDb(
 	return db;
 }
 
-// 동시 saveDb 호출 직렬화 — 겹친 저장이 같은 .tmp/.bak를 두고 경합하면
+// 동시 저장·압축 직렬화 — 겹친 저장이 같은 .tmp/.bak를 두고 경합하면
 // rename이 상대의 .tmp를 소비해 index.db가 유실될 수 있다
-let saveChain: Promise<void> = Promise.resolve();
+let saveChain: Promise<unknown> = Promise.resolve();
 
-export function saveDb(plugin: Plugin, db: Database): Promise<void> {
-	const next = saveChain.then(() => doSave(plugin, db));
+function enqueue<T>(job: () => Promise<T>): Promise<T> {
+	const next = saveChain.then(job);
 	saveChain = next.catch(() => {});
 	return next;
 }
 
+export function saveDb(plugin: Plugin, db: Database): Promise<void> {
+	return enqueue(() => doSave(plugin, db));
+}
+
 async function doSave(plugin: Plugin, db: Database): Promise<void> {
+	const tmp = tmpPath(plugin);
+	const bytes = db.export();
+	await replaceWithTmp(plugin, tmp, () =>
+		plugin.app.vault.adapter.writeBinary(tmp, bytes.buffer as ArrayBuffer),
+	);
+}
+
+export interface CompactResult {
+	/** 압축 전·후 index.db 크기(바이트). */
+	before: number;
+	after: number;
+}
+
+/**
+ * 색인 압축 — 메모리 상태를 먼저 저장한 뒤 디스크의 index.db를 압축 사본으로 바꾼다.
+ * 교체는 저장과 같은 순서(직전 파일 .bak 보존)·같은 직렬화 체인을 쓴다.
+ * 성공하면 호출부가 openDbFile로 메모리 DB를 다시 열어야 한다 — 그대로 두면
+ * 다음 저장이 압축 전의 큰 이미지를 다시 쓴다.
+ */
+export function compactDb(
+	plugin: Plugin,
+	db: Database,
+): Promise<CompactResult> {
+	return enqueue(async () => {
+		await doSave(plugin, db);
+		const adapter = plugin.app.vault.adapter;
+		const path = dbPath(plugin);
+		const tmp = tmpPath(plugin);
+		const before = (await adapter.stat(path))?.size ?? 0;
+		await replaceWithTmp(plugin, tmp, async () =>
+			compactDbFile(fullPath(plugin, path), fullPath(plugin, tmp)),
+		);
+		const after = (await adapter.stat(path))?.size ?? 0;
+		return { before, after };
+	});
+}
+
+/** index.db를 그대로 연다(복구·마이그레이션 없음) — 방금 검사를 통과한 압축 파일을 다시 불러올 때. */
+export async function openDbFile(plugin: Plugin): Promise<Database> {
+	const SQL = await loadSqlJs();
+	return new SQL.Database(
+		new Uint8Array(await plugin.app.vault.adapter.readBinary(dbPath(plugin))),
+	);
+}
+
+function fullPath(plugin: Plugin, p: string): string {
+	const adapter = plugin.app.vault.adapter as {
+		getFullPath?: (normalizedPath: string) => string;
+	};
+	if (typeof adapter.getFullPath !== "function") {
+		throw new Error("데스크톱 볼트에서만 색인을 압축할 수 있습니다");
+	}
+	return adapter.getFullPath(p);
+}
+
+/** writeTmp로 tmp를 만든 뒤 index.db와 바꾼다 — 저장·압축 공통. */
+async function replaceWithTmp(
+	plugin: Plugin,
+	tmp: string,
+	writeTmp: () => Promise<void>,
+): Promise<void> {
 	const adapter = plugin.app.vault.adapter;
 	const path = dbPath(plugin);
-	const tmp = tmpPath(plugin);
 	const bak = bakPath(plugin);
-	const bytes = db.export();
 
 	let demoted = false;
 	try {
 		// 1) 새 인덱스를 임시 파일에 먼저 쓴다
-		await adapter.writeBinary(tmp, bytes.buffer as ArrayBuffer);
+		await writeTmp();
 		// 2) 기존 인덱스를 .bak로 보존한 뒤 교체 — 어느 단계에서 중단돼도
 		//    index.db 또는 index.db.bak 중 하나는 온전하게 남는다
 		if (await adapter.exists(path)) {

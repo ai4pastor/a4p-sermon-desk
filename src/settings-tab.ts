@@ -58,7 +58,9 @@ import {
 	TAG_SCOPE,
 } from "./db/embeddings";
 import { getMeta, FOLDERS_FP_KEY, PROTECTED_FP_KEY } from "./db/meta";
+import { isCompactAvailable } from "./db/compact";
 import { countUnindexed, scanVault } from "./indexer/scanner";
+import type { Database } from "sql.js";
 import {
 	deriveProtectedTerms,
 	parseProtectedInput,
@@ -70,6 +72,13 @@ interface GroupMeta {
 	title: string;
 	desc: string;
 }
+
+// 큰 볼트 안내 기준 — 실측: 노트 2,749개(청크 4,480개)의 첫 형태소 색인이 옵시디언에서 45분,
+// 색인 322MB를 sql.js로 열면 메모리 692MB. 압축 버튼 강조는 빈 공간이 10MB 이상이면서 20% 이상일 때.
+const LARGE_SCOPE_NOTES = 20_000;
+const LARGE_INDEX_BYTES = 200 * 1048576;
+const COMPACT_MIN_FREE_BYTES = 10 * 1048576;
+const COMPACT_MIN_FREE_RATIO = 0.2;
 
 const GROUP_META: Record<GroupId, GroupMeta> = {
 	internal: {
@@ -86,13 +95,26 @@ const GROUP_META: Record<GroupId, GroupMeta> = {
 
 export class WeightedRecallSettingTab extends PluginSettingTab {
 	plugin: WeightedRecallPlugin;
+	/** 탭이 열려 있는지 — 색인을 다 불러왔을 때 다시 그릴지 판단한다. */
+	private shown = false;
 
 	constructor(app: App, plugin: WeightedRecallPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
 
+	hide(): void {
+		this.shown = false;
+		super.hide();
+	}
+
+	/** 열려 있으면 다시 그린다 — 지연 로드가 끝났을 때 '불러오는 중' 안내를 걷어낸다. */
+	refreshIfShown(): void {
+		if (this.shown) this.display();
+	}
+
 	display(): void {
+		this.shown = true;
 		const { containerEl } = this;
 		containerEl.empty();
 
@@ -152,7 +174,12 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 		if (folderCount === 0) {
 			now =
 				"▶ 지금 할 일: 아래 ‘📂 검색 대상 폴더’에서 내 설교·묵상 폴더를 먼저 추가하세요.";
-		} else if (!db || chunks === 0 || !inSync) {
+		} else if (!db) {
+			now =
+				this.plugin.dbStatus === "failed"
+					? "⚠️ 색인 파일을 불러오지 못했습니다. 옵시디언을 다시 시작해 보세요."
+					: "⏳ 색인 파일을 불러오는 중입니다. 잠시 기다려 주세요.";
+		} else if (chunks === 0 || !inSync) {
 			now =
 				"▶ 지금 할 일: ‘📂 검색 대상 폴더’의 [재색인 (변경분만)] 버튼을 누르세요. (처음엔 전체를 읽어 들여 몇 분 걸릴 수 있습니다)";
 		} else {
@@ -602,6 +629,13 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 
 	/** 🗑 어휘 사전 삭제 — 설정(전 테마의 lexiconIds 포함)과 DB(노트 매핑·키 임베딩) 모두. 확인 모달 후. */
 	private async deleteLexicon(lex: Lexicon): Promise<void> {
+		// 색인을 불러오기 전에 지우면 노트 매핑·키 임베딩 행이 DB에 고아로 남는다
+		if (!this.plugin.db) {
+			new Notice(
+				"A4P Sermon Desk: 색인을 불러오는 중입니다. 잠시 후 다시 시도해 주세요.",
+			);
+			return;
+		}
 		const s = this.plugin.settings;
 		const users = s.profiles
 			.filter((p) => p.lexiconIds.includes(lex.id))
@@ -910,7 +944,8 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 		new Setting(containerEl).addButton((btn: ButtonComponent) => {
 			embedBtn = btn;
 			refreshBtn();
-			btn.onClick(async () => {
+			// 재색인·압축과 겹치지 않게 DB 작업 잠금 안에서 돈다
+			btn.onClick(() => this.plugin.withBusy(async () => {
 				const db = this.plugin.db;
 				if (!db) return;
 				const apiKey = this.plugin.settings.openaiApiKey;
@@ -946,7 +981,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 					updateStatus();
 					refreshBtn();
 				}
-			});
+			}));
 		});
 	}
 
@@ -1003,7 +1038,8 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 		new Setting(containerEl).addButton((btn: ButtonComponent) => {
 			embedBtn = btn;
 			refreshBtn();
-			btn.onClick(async () => {
+			// 재색인·압축과 겹치지 않게 DB 작업 잠금 안에서 돈다
+			btn.onClick(() => this.plugin.withBusy(async () => {
 				const db = this.plugin.db;
 				if (!db) return;
 				const apiKey = this.plugin.settings.openaiApiKey;
@@ -1039,7 +1075,7 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 					updateStatus();
 					refreshBtn();
 				}
-			});
+			}));
 		});
 	}
 
@@ -1122,18 +1158,27 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 
 	private renderSyncBanner(containerEl: HTMLElement): void {
 		const db = this.plugin.db;
+		if (!db) {
+			// 지연 로드 중 — 다 불러오면 main이 refreshIfShown으로 다시 그린다
+			containerEl.createDiv({ cls: "wr-sync-banner" }).createEl("p", {
+				text:
+					this.plugin.dbStatus === "failed"
+						? "⚠️ 색인 파일을 불러오지 못했습니다. 옵시디언을 다시 시작해 보세요."
+						: "⏳ 색인 파일을 불러오는 중입니다. 다 불러오면 이 화면이 저절로 새로고침됩니다.",
+				cls: "setting-item-description",
+			});
+			return;
+		}
 		const inSync = db
 			? getMeta(db, FOLDERS_FP_KEY) ===
 				foldersFingerprint(this.plugin.settings)
 			: false;
 		// 범위에 들어왔지만 인덱스에 없는 노트(0점 폴더 부활·폴더 추가) — 지문이
 		// 맞아 보여도 이 수가 0이 아니면 그 내용은 검색되지 않는다.
-		const missing = db
-			? countUnindexed(
-					db,
-					scanVault(this.app, this.plugin.settings).map((r) => r.path),
-				)
-			: 0;
+		const scopePaths = scanVault(this.app, this.plugin.settings).map(
+			(r) => r.path,
+		);
+		const missing = db ? countUnindexed(db, scopePaths) : 0;
 		// 배너 문구가 권하는 버튼만 강조(CTA) — 문구와 색이 어긋나지 않게. 정상이면 강조 없음.
 		const recommend: "reindex" | "reapply" | null =
 			missing > 0 ? "reindex" : !inSync ? "reapply" : null;
@@ -1183,6 +1228,67 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 						this.display();
 					});
 			});
+		this.renderIndexStats(banner, db, scopePaths.length, recommend !== null);
+	}
+
+	/** 색인 현황·큰 볼트 경고·[색인 압축] — 범위를 줄인 뒤 index.db 파일까지 줄이는 길. */
+	private renderIndexStats(
+		banner: HTMLElement,
+		db: Database,
+		scopeNotes: number,
+		otherRecommended: boolean,
+	): void {
+		const num = (sql: string) => Number(db.exec(sql)[0]?.values[0]?.[0] ?? 0);
+		const pageSize = num("PRAGMA page_size");
+		const sizeBytes = num("PRAGMA page_count") * pageSize;
+		const freeBytes = num("PRAGMA freelist_count") * pageSize;
+		const mb = (b: number) => (b / 1048576).toFixed(1);
+		const count = (n: number) => n.toLocaleString("ko-KR");
+		const canCompact = isCompactAvailable();
+		// 압축을 권하는 조건 — 안내 문구와 버튼 강조가 같은 조건을 쓴다
+		const worthCompacting =
+			freeBytes >= COMPACT_MIN_FREE_BYTES &&
+			freeBytes >= sizeBytes * COMPACT_MIN_FREE_RATIO;
+
+		let stats = `색인 ${mb(sizeBytes)}MB — 노트 ${count(num("SELECT COUNT(*) FROM notes"))}개 · 청크 ${count(num("SELECT COUNT(*) FROM chunks"))}개 · 임베딩 ${count(num("SELECT COUNT(*) FROM embeddings"))}개`;
+		if (worthCompacting) {
+			stats += canCompact
+				? ` · 비어 있는 공간 ${mb(freeBytes)}MB — [색인 압축]으로 줄일 수 있습니다.`
+				: ` · 비어 있는 공간 ${mb(freeBytes)}MB — 색인 압축은 최신 옵시디언 설치 파일에서만 쓸 수 있습니다(obsidian.md에서 새로 내려받아 설치).`;
+		}
+		banner.createEl("p", { text: stats, cls: "setting-item-description" });
+
+		const warnings: string[] = [];
+		if (scopeNotes >= LARGE_SCOPE_NOTES) {
+			warnings.push(
+				`검색 대상 노트가 ${count(scopeNotes)}개라 처음 색인에 몇 시간이 걸릴 수 있습니다.`,
+			);
+		}
+		if (sizeBytes >= LARGE_INDEX_BYTES) {
+			warnings.push(
+				`색인이 ${mb(sizeBytes)}MB라 옵시디언을 켤 때와 검색할 때 메모리를 많이 씁니다.`,
+			);
+		}
+		if (warnings.length > 0) {
+			banner.createEl("p", {
+				text: `⚠️ ${warnings.join(" ")} 설교 준비에 쓰는 폴더만 남기고 [재색인 (변경분만)]을 누르세요${canCompact ? ". 그다음 [색인 압축]을 누르면 파일도 줄어듭니다." : "."}`,
+				cls: "setting-item-description",
+			});
+		}
+
+		if (!canCompact) return;
+		new Setting(banner).addButton((btn) => {
+			btn.setButtonText("색인 압축")
+				.setTooltip(
+					"검색 범위를 줄이거나 노트를 지운 뒤 남는 빈 공간을 걷어내 index.db 파일을 줄입니다. 내용·임베딩은 그대로이고 API 비용이 없습니다. 직전 파일은 index.db.bak로 남습니다.",
+				)
+				.onClick(async () => {
+					btn.setButtonText("압축 중…").setDisabled(true);
+					await this.plugin.runCompact();
+					this.display();
+				});
+			if (worthCompacting && !otherRecommended) btn.setCta();
+		});
 	}
 
 	/** 테마 프로파일 관리 — 전환·추가(복제)·이름 변경·삭제. */

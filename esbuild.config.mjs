@@ -24,6 +24,8 @@ const ctx = await esbuild.context({
     "@lezer/common",
     "@lezer/highlight",
     "@lezer/lr",
+    // 옵시디언 데스크톱의 내장 SQLite(색인 압축) — builtin-modules 목록에 없어 직접 지정
+    "node:sqlite",
     ...builtins,
   ],
   format: "cjs",

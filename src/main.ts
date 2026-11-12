@@ -19,7 +19,13 @@ import {
 } from "./settings";
 import { WeightedRecallSettingTab } from "./settings-tab";
 import { createIdeaMemo } from "./idea-memo-create";
-import { loadOrCreateDb, saveDb } from "./db/persistence";
+import {
+	compactDb,
+	loadOrCreateDb,
+	openDbFile,
+	saveDb,
+	type CompactResult,
+} from "./db/persistence";
 import { retokenizeAllChunks, runIndex } from "./indexer/indexer";
 import {
 	deleteNoteRows,
@@ -86,6 +92,9 @@ type VaultOp =
 /** 삭제·이름 변경 후 index.db(설치본 100MB급) 저장을 묶는 지연 시간. */
 const VAULT_SAVE_DELAY_MS = 30_000;
 
+/** 압축 뒤 옛 DB를 닫기까지의 유예 — 임베딩 API 대기(30초 × 재시도)를 넉넉히 덮는다. */
+const RETIRED_DB_CLOSE_MS = 120_000;
+
 export default class WeightedRecallPlugin extends Plugin {
 	settings: WeightedRecallSettings = DEFAULT_SETTINGS;
 	db: Database | null = null;
@@ -98,11 +107,19 @@ export default class WeightedRecallPlugin extends Plugin {
 	private pendingVaultOps: VaultOp[] = [];
 	/** 지연 저장 타이머 — 삭제·이름 변경마다 index.db를 다시 쓰지 않도록 묶는다 */
 	private saveTimer: number | null = null;
+	/** index.db 불러오기 상태 — onload를 막지 않도록 레이아웃 준비 뒤(또는 첫 사용 때) 읽는다 */
+	dbStatus: "loading" | "ready" | "failed" = "loading";
+	private dbLoad: Promise<void> | null = null;
+	private unloaded = false;
+	private settingTab: WeightedRecallSettingTab | null = null;
+	/** 압축으로 교체된 옛 DB — 직전에 시작된 검색이 끝나도록 잠시 두었다가 닫는다 */
+	private retiredDb: { db: Database; timer: number } | null = null;
 
 	async onload() {
 		await this.loadSettings();
 		this.applyProtectedTerms();
-		this.addSettingTab(new WeightedRecallSettingTab(this.app, this));
+		this.settingTab = new WeightedRecallSettingTab(this.app, this);
+		this.addSettingTab(this.settingTab);
 
 		this.styleEl = document.createElement("style");
 		this.styleEl.id = "weighted-recall-styles";
@@ -194,9 +211,9 @@ export default class WeightedRecallPlugin extends Plugin {
 			}),
 		);
 
-		this.db = await loadOrCreateDb(this, () => this.markDbDirty());
 		// 볼트 삭제·이름 변경을 색인에 즉시 반영(행만 정리, 저장은 지연). 생성·수정은
 		// 형태소·임베딩 비용 때문에 [재색인 (변경분만)] 버튼이 담당한다.
+		// DB를 불러오기 전에 들어온 이벤트는 대기열에 쌓였다가 불러온 뒤 반영된다.
 		this.registerEvent(
 			this.app.vault.on("delete", (file) => this.onVaultDelete(file)),
 		);
@@ -205,36 +222,12 @@ export default class WeightedRecallPlugin extends Plugin {
 				this.onVaultRename(file, oldPath),
 			),
 		);
-		if (__DEV__) {
-			const v = this.db.exec(
-				"SELECT value FROM meta WHERE key='schema_version'",
-			);
-			const version = v[0]?.values[0]?.[0] ?? "?";
-			console.log(`[a4p-sermon-desk] db loaded, schema=${version}`);
-		}
-
-		// 설정 마이그레이션이 일어났다면, 기존 인덱스의 그룹/가중치를 비파괴적으로 재적용
-		if (this.migratedThisLoad) {
-			try {
-				this.dbDirty = true;
-				const r = reapplyFolderSettings(
-					this.db,
-					this.settings,
-					scanVault(this.app, this.settings).map((x) => x.path),
-				);
-				await this.persistDb();
-				if (__DEV__) {
-					console.log(
-						`[a4p-sermon-desk] 마이그레이션 후 폴더 재적용: ${r.updated} notes, 미색인 ${r.missing}`,
-					);
-				}
-			} catch (e) {
-				console.error(
-					"[a4p-sermon-desk] post-migration reapply failed",
-					e,
-				);
-			}
-		}
+		// index.db는 onload에서 읽지 않는다 — 옵시디언은 켤 때 플러그인 onload를 하나씩
+		// 기다리고 3초가 넘으면 "taking long to load" 경고를 띄운다(옵시디언 안 실측:
+		// 112MB 읽기 1~3초, 큰 볼트의 385MB면 수 초~10초).
+		this.app.workspace.onLayoutReady(() => {
+			void this.startDbLoad();
+		});
 
 		// ── DEV 전용 디버그 커맨드 (production 빌드에서 자동 제거) ──
 		if (__DEV__) {
@@ -546,7 +539,73 @@ export default class WeightedRecallPlugin extends Plugin {
 		}
 	}
 
-	private async withBusy(fn: () => Promise<void>): Promise<void> {
+	/** DB 지연 로드를 시작한다(이미 시작했으면 같은 약속을 돌려준다). */
+	private startDbLoad(): Promise<void> {
+		if (!this.dbLoad) this.dbLoad = this.loadDb();
+		return this.dbLoad;
+	}
+
+	/** 지연 로드가 끝날 때까지 기다려 DB를 돌려준다 — 불러오는 중에 들어온 검색·작업용. 실패하면 null. */
+	async whenDbReady(): Promise<Database | null> {
+		await this.startDbLoad();
+		return this.db;
+	}
+
+	private async loadDb(): Promise<void> {
+		let db: Database;
+		try {
+			db = await loadOrCreateDb(this, () => this.markDbDirty());
+		} catch (e) {
+			this.dbStatus = "failed";
+			console.error("[a4p-sermon-desk] index.db 불러오기 실패", e);
+			new Notice(
+				`A4P Sermon Desk: 색인을 불러오지 못했습니다 — ${(e as Error).message}`,
+			);
+			this.settingTab?.refreshIfShown();
+			return;
+		}
+		if (this.unloaded) {
+			db.close();
+			return;
+		}
+		this.db = db;
+		this.dbStatus = "ready";
+		if (__DEV__) {
+			const v = db.exec("SELECT value FROM meta WHERE key='schema_version'");
+			const version = v[0]?.values[0]?.[0] ?? "?";
+			console.log(`[a4p-sermon-desk] db loaded, schema=${version}`);
+		}
+
+		// 설정 마이그레이션이 일어났다면, 기존 인덱스의 그룹/가중치를 비파괴적으로 재적용
+		if (this.migratedThisLoad) {
+			try {
+				this.dbDirty = true;
+				const r = reapplyFolderSettings(
+					db,
+					this.settings,
+					scanVault(this.app, this.settings).map((x) => x.path),
+				);
+				await this.persistDb();
+				if (__DEV__) {
+					console.log(
+						`[a4p-sermon-desk] 마이그레이션 후 폴더 재적용: ${r.updated} notes, 미색인 ${r.missing}`,
+					);
+				}
+			} catch (e) {
+				console.error(
+					"[a4p-sermon-desk] post-migration reapply failed",
+					e,
+				);
+			}
+		}
+
+		// 불러오는 동안 쌓인 볼트 삭제·이름 변경 반영 — 작업 중이면 그 작업이 끝날 때 반영된다
+		if (!this.busy) this.flushPendingVaultOps();
+		this.settingTab?.refreshIfShown();
+	}
+
+	/** DB를 쓰는 작업을 한 번에 하나만 — 설정 탭의 임베딩 작업도 이 잠금을 쓴다(압축·재색인과 겹치지 않게). */
+	async withBusy(fn: () => Promise<void>): Promise<void> {
 		if (this.busy) {
 			new Notice(
 				"A4P Sermon Desk: 다른 작업이 진행 중입니다. 잠시 후 다시 시도해주세요.",
@@ -595,9 +654,9 @@ export default class WeightedRecallPlugin extends Plugin {
 		}
 	}
 
-	/** busy(재색인 등 열린 트랜잭션) 중이면 대기열에, 아니면 즉시 반영. */
+	/** busy(재색인 등 열린 트랜잭션) 중이거나 DB를 아직 불러오는 중이면 대기열에, 아니면 즉시 반영. */
 	private queueVaultOp(op: VaultOp): void {
-		if (this.busy) {
+		if (this.busy || !this.db) {
 			this.pendingVaultOps.push(op);
 			return;
 		}
@@ -730,6 +789,9 @@ export default class WeightedRecallPlugin extends Plugin {
 	}
 
 	async onunload() {
+		// 아직 불러오는 중이면 loadDb가 끝나는 대로 DB를 닫는다
+		this.unloaded = true;
+		this.closeRetiredDb();
 		if (this.saveTimer !== null) {
 			window.clearTimeout(this.saveTimer);
 			this.saveTimer = null;
@@ -843,6 +905,7 @@ export default class WeightedRecallPlugin extends Plugin {
 	/** 형태소 색인(chunk_terms)만 재계산 — 임베딩 유지, API 비용 0. 설정 탭 버튼이 호출. */
 	async runRetokenize(): Promise<void> {
 		return this.withBusy(async () => {
+			await this.whenDbReady();
 			if (!this.db) {
 				new Notice("A4P Sermon Desk: DB가 로드되지 않았습니다");
 				return;
@@ -881,6 +944,7 @@ export default class WeightedRecallPlugin extends Plugin {
 	/** 재색인(기본 변경분만, force면 전체) — 설정 탭 버튼이 호출. */
 	async runReindex(force = false): Promise<void> {
 		return this.withBusy(async () => {
+			await this.whenDbReady();
 			if (!this.db) {
 				new Notice("A4P Sermon Desk: DB가 로드되지 않았습니다");
 				return;
@@ -939,6 +1003,7 @@ export default class WeightedRecallPlugin extends Plugin {
 	/** 경량 재적용 — 재색인 없이 기존 인덱스의 그룹/가중치만 갱신. */
 	async runReapply(): Promise<void> {
 		return this.withBusy(async () => {
+			await this.whenDbReady();
 			if (!this.db) {
 				new Notice("A4P Sermon Desk: DB가 로드되지 않았습니다");
 				return;
@@ -971,6 +1036,78 @@ export default class WeightedRecallPlugin extends Plugin {
 				console.error("[a4p-sermon-desk] reapply failed", e);
 			}
 		});
+	}
+
+	/** 색인 압축 — 범위를 줄인 뒤 남는 빈 공간을 걷어낸다(내용·임베딩 그대로, API 비용 0). 설정 탭 버튼이 호출. */
+	async runCompact(): Promise<void> {
+		return this.withBusy(async () => {
+			const old = await this.whenDbReady();
+			if (!old) {
+				new Notice("A4P Sermon Desk: DB가 로드되지 않았습니다");
+				return;
+			}
+			const progress = new Notice("A4P Sermon Desk: 색인 압축 중…", 0);
+			let r: CompactResult;
+			try {
+				r = await compactDb(this, old);
+				this.dbDirty = false;
+			} catch (e) {
+				progress.hide();
+				new Notice(
+					`A4P Sermon Desk: 색인 압축 실패 — ${(e as Error).message} (색인 파일은 그대로입니다)`,
+				);
+				console.error("[a4p-sermon-desk] compact failed", e);
+				return;
+			}
+			// 메모리의 DB도 압축 파일로 바꾼다 — 그대로 두면 다음 저장이 압축 전의 큰 이미지를 다시 쓴다.
+			// 다시 열지 못하면 지금 DB(내용 동일)를 그대로 쓴다. 디스크엔 검사를 통과한 압축 파일이
+			// 있으므로 다시 시작하면 그 파일로 열린다(그것도 실패하면 .bak 복구 경로).
+			progress.hide();
+			try {
+				const fresh = await openDbFile(this);
+				const chunks = (d: Database) =>
+					d.exec("SELECT COUNT(*) FROM chunks")[0]?.values[0]?.[0];
+				if (chunks(fresh) !== chunks(old)) {
+					fresh.close();
+					throw new Error("다시 연 색인의 청크 수가 다릅니다");
+				}
+				if (this.unloaded) {
+					fresh.close();
+					return;
+				}
+				this.db = fresh;
+				this.retireDb(old);
+				resetBm25Cache();
+				resetVectorCache();
+			} catch (e) {
+				console.error("[a4p-sermon-desk] compacted reopen failed", e);
+				new Notice(
+					"A4P Sermon Desk: 색인 파일은 압축했지만 다시 불러오지 못했습니다. 옵시디언을 다시 시작해 주세요.",
+				);
+				return;
+			}
+			const mb = (b: number) => (b / 1048576).toFixed(1);
+			new Notice(
+				`A4P Sermon Desk: 색인 압축 완료 — ${mb(r.before)}MB → ${mb(r.after)}MB`,
+			);
+		});
+	}
+
+	/** 압축 전 DB는 바로 닫지 않는다 — 그 직전에 시작된 검색이 끝나도록 잠시 두었다가 닫는다(내용은 같다). */
+	private retireDb(old: Database): void {
+		this.closeRetiredDb();
+		const timer = window.setTimeout(
+			() => this.closeRetiredDb(),
+			RETIRED_DB_CLOSE_MS,
+		);
+		this.retiredDb = { db: old, timer };
+	}
+
+	private closeRetiredDb(): void {
+		if (!this.retiredDb) return;
+		window.clearTimeout(this.retiredDb.timer);
+		this.retiredDb.db.close();
+		this.retiredDb = null;
 	}
 
 	/** DB가 변경되었음을 표시 — 다음 persistDb/unload에서 저장 대상이 된다 */

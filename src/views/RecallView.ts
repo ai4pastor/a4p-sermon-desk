@@ -80,6 +80,8 @@ export interface RecallViewHost {
 	db: Database | null;
 	settings: WeightedRecallSettings;
 	saveSettings(): Promise<void>;
+	/** 색인 지연 로드가 끝날 때까지 기다려 DB를 돌려준다(실패하면 null). */
+	whenDbReady(): Promise<Database | null>;
 }
 
 interface QueryContext {
@@ -770,7 +772,13 @@ export class RecallView extends ItemView {
 		opts: { manual?: boolean; query?: QueryContext; file?: TFile } = {},
 	): Promise<void> {
 		const gen = ++this.refreshGen;
-		const db = this.host.db;
+		let db = this.host.db;
+		if (!db) {
+			// 옵시디언을 막 켜서 색인을 아직 불러오는 중 — 다 불러온 뒤 이어서 검색한다
+			this.setStatus("색인 불러오는 중…");
+			db = await this.host.whenDbReady();
+			if (gen !== this.refreshGen) return;
+		}
 		if (!db) {
 			this.clearList();
 			this.setStatus("DB가 로드되지 않았습니다");
@@ -1381,7 +1389,7 @@ export class RecallView extends ItemView {
 		if (this.chatLoading) return;
 		this.chatError = null;
 
-		const db = this.host.db;
+		const db = this.host.db ?? (await this.host.whenDbReady());
 		if (!db) {
 			this.chatError = "DB가 로드되지 않았습니다.";
 			this.renderChat();
