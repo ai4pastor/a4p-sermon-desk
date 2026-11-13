@@ -27,6 +27,7 @@ import {
 	type CompactResult,
 } from "./db/persistence";
 import { retokenizeAllChunks, runIndex } from "./indexer/indexer";
+import { remainingText } from "./eta";
 import {
 	deleteNoteRows,
 	deleteNotesUnderFolder,
@@ -95,6 +96,9 @@ const VAULT_SAVE_DELAY_MS = 30_000;
 /** 압축 뒤 옛 DB를 닫기까지의 유예 — 임베딩 API 대기(30초 × 재시도)를 넉넉히 덮는다. */
 const RETIRED_DB_CLOSE_MS = 120_000;
 
+/** 형태소 재계산 중간 저장 간격 — 꺼져도 이어서 하려면 진행분이 디스크에 있어야 한다(저장마다 index.db 전체 쓰기). */
+const RETOKENIZE_SAVE_EVERY_MS = 5 * 60_000;
+
 export default class WeightedRecallPlugin extends Plugin {
 	settings: WeightedRecallSettings = DEFAULT_SETTINGS;
 	db: Database | null = null;
@@ -109,6 +113,8 @@ export default class WeightedRecallPlugin extends Plugin {
 	private saveTimer: number | null = null;
 	/** index.db 불러오기 상태 — onload를 막지 않도록 레이아웃 준비 뒤(또는 첫 사용 때) 읽는다 */
 	dbStatus: "loading" | "ready" | "failed" = "loading";
+	/** 형태소 재계산이 도는 중 — 설정 탭이 '멈춤'(진행 기록만 남음)과 '진행 중'을 구별한다 */
+	retokenizing = false;
 	private dbLoad: Promise<void> | null = null;
 	private unloaded = false;
 	private settingTab: WeightedRecallSettingTab | null = null;
@@ -914,29 +920,55 @@ export default class WeightedRecallPlugin extends Plugin {
 				"A4P Sermon Desk: 형태소 모델 로드 중…",
 				0,
 			);
+			this.retokenizing = true;
 			try {
 				await preloadMorpheme();
 				this.applyProtectedTerms();
 				this.dbDirty = true;
+				const startedAt = Date.now();
+				let startDone = -1;
+				let lastSave = startedAt;
 				const r = await retokenizeAllChunks(
 					this.db,
 					this.protectedFp(),
-					(done, total) =>
+					(done, total) => {
+						if (startDone < 0) startDone = done;
+						const eta = remainingText(
+							done - startDone,
+							Date.now() - startedAt,
+							total - done,
+						);
 						progress.setMessage(
-							`A4P Sermon Desk: 형태소 색인 재계산 ${done}/${total}`,
-						),
+							`A4P Sermon Desk: 형태소 색인 재계산 ${done}/${total}${eta ? ` · ${eta}` : ""} — 중간에 옵시디언을 꺼도 다시 누르면 이어서 합니다`,
+						);
+					},
+					async () => {
+						// 배치 COMMIT 직후(트랜잭션 밖) — 몇 분마다 디스크에 남겨야 꺼져도 이어서 할 수 있다
+						this.dbDirty = true;
+						if (Date.now() - lastSave < RETOKENIZE_SAVE_EVERY_MS) return;
+						await this.persistDb();
+						lastSave = Date.now();
+					},
 				);
 				await this.persistDb();
 				progress.hide();
 				new Notice(
-					`A4P Sermon Desk: 형태소 색인 재계산 완료 — 청크 ${r.chunks}개, 토큰 ${r.terms}개 (임베딩 유지)`,
+					r.resumedFrom > 0
+						? `A4P Sermon Desk: 형태소 색인 재계산 완료 — 청크 ${r.chunks}개(멈췄던 ${r.resumedFrom}개 다음부터 이어서, 임베딩 유지)`
+						: `A4P Sermon Desk: 형태소 색인 재계산 완료 — 청크 ${r.chunks}개, 토큰 ${r.terms}개 (임베딩 유지)`,
 				);
 			} catch (e) {
 				progress.hide();
+				// 플러그인이 꺼지며 DB가 닫힌 경우 — 끝난 배치까지는 저장되고 다시 누르면 이어서 한다
+				if (this.unloaded) return;
 				new Notice(
 					`A4P Sermon Desk: 형태소 색인 재계산 실패 — ${(e as Error).message}`,
 				);
 				console.error("[a4p-sermon-desk] retokenize failed", e);
+			} finally {
+				this.retokenizing = false;
+				// 도는 사이 설정 탭을 다시 열었으면 '진행 중' 표시가 남아 있다 — 끝난 상태로 다시 그린다
+				if (!this.unloaded) this.settingTab?.refreshIfShown();
 			}
 		});
 	}

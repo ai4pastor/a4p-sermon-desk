@@ -60,6 +60,8 @@ import {
 import { getMeta, FOLDERS_FP_KEY, PROTECTED_FP_KEY } from "./db/meta";
 import { isCompactAvailable } from "./db/compact";
 import { countUnindexed, scanVault } from "./indexer/scanner";
+import { readRetokenizeProgress } from "./indexer/indexer";
+import { retokenizeEstimate } from "./eta";
 import type { Database } from "sql.js";
 import {
 	deriveProtectedTerms,
@@ -288,6 +290,8 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 		const statusEl = containerEl.createEl("p", {
 			cls: "setting-item-description",
 		});
+		let retokenizeBtn: ButtonComponent | null = null;
+		// 안내 문구와 버튼(이름·강조)을 같은 판정으로 — 다시 계산이 필요할 때만 강조한다
 		const renderStatus = () => {
 			const db = this.plugin.db;
 			let chunks = 0;
@@ -295,18 +299,40 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 				const row = db.exec("SELECT COUNT(*) FROM chunks")[0];
 				chunks = row ? Number(row.values[0][0]) : 0;
 			}
+			const count = (n: number) => n.toLocaleString("ko-KR");
+			let text: string;
+			let label = "형태소 색인 다시 계산 (임베딩 유지 · API 비용 0)";
+			let recommend = false;
+			let running = false;
 			if (!db || chunks === 0) {
-				statusEl.setText("색인이 아직 없습니다 — 재색인 때 보호 단어가 함께 반영됩니다.");
-				return;
+				text = "색인이 아직 없습니다 — 재색인 때 보호 단어가 함께 반영됩니다.";
+			} else if (this.plugin.retokenizing) {
+				// 진행 기록이 있어도 '멈춤'이 아니다 — 지금 도는 중
+				text = "⏳ 형태소 색인을 다시 계산하는 중입니다 — 진행과 남은 시간은 오른쪽 위 알림에 보입니다.";
+				label = "재계산 중…";
+				running = true;
+			} else {
+				const fp = this.plugin.protectedFp();
+				const paused = readRetokenizeProgress(db, fp);
+				if (getMeta(db, PROTECTED_FP_KEY) === fp) {
+					text = "✅ 보호 단어가 형태소 색인에 반영되어 있습니다.";
+				} else if (paused) {
+					const left = Math.max(0, chunks - paused.done);
+					text = `⏸ 형태소 색인 재계산이 중간에 멈췄습니다 — 청크 ${count(chunks)}개 중 ${count(paused.done)}개 완료. 아래 버튼을 누르면 남은 ${count(left)}개만 이어서 계산합니다(${retokenizeEstimate(left)}).`;
+					label = `이어서 계산 (남은 ${count(left)}개)`;
+					recommend = true;
+				} else {
+					text = `⚠️ 보호 단어가 색인과 다릅니다(단어 변경 또는 0.8.0 업그레이드). [형태소 색인 다시 계산]을 한 번 눌러주세요 — 임베딩은 그대로 두므로 API 비용이 없습니다. 청크 ${count(chunks)}개라 ${retokenizeEstimate(chunks)}. 진행 중에 남은 시간이 보이고, 중간에 옵시디언을 꺼도 다시 누르면 이어서 합니다.`;
+					recommend = true;
+				}
 			}
-			const inSync = getMeta(db, PROTECTED_FP_KEY) === this.plugin.protectedFp();
-			statusEl.setText(
-				inSync
-					? "✅ 보호 단어가 형태소 색인에 반영되어 있습니다."
-					: "⚠️ 보호 단어가 색인과 다릅니다(단어 변경 또는 0.8.0 업그레이드). [형태소 색인 다시 계산]을 한 번 눌러주세요 — 임베딩은 그대로 두므로 API 비용이 없고 보통 1분 안에 끝납니다.",
-			);
+			statusEl.setText(text);
+			if (retokenizeBtn) {
+				retokenizeBtn.setButtonText(label).setDisabled(running);
+				if (recommend) retokenizeBtn.setCta();
+				else retokenizeBtn.removeCta();
+			}
 		};
-		renderStatus();
 
 		new Setting(containerEl)
 			.setName("형태소 색인 다시 계산")
@@ -314,14 +340,14 @@ export class WeightedRecallSettingTab extends PluginSettingTab {
 				`전체 청크의 검색어 색인만 새 보호 단어 규칙으로 다시 만듭니다(현재 ${all.length}개). 임베딩·노트 데이터는 건드리지 않습니다.`,
 			)
 			.addButton((btn) => {
-				btn.setButtonText("형태소 색인 다시 계산 (임베딩 유지 · API 비용 0)")
-					.setCta()
-					.onClick(async () => {
-						btn.setButtonText("재계산 중…").setDisabled(true);
-						await this.plugin.runRetokenize();
-						this.display();
-					});
+				retokenizeBtn = btn;
+				btn.onClick(async () => {
+					btn.setButtonText("재계산 중…").setDisabled(true);
+					await this.plugin.runRetokenize();
+					this.display();
+				});
 			});
+		renderStatus();
 	}
 
 	private renderChat(containerEl: HTMLElement): void {

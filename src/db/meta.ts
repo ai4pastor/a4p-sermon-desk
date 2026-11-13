@@ -7,6 +7,8 @@ export const ALGO_VERSION_KEY = "index_algo_version";
 export const DOCTRINE_FP_KEY = "index_doctrine_fingerprint";
 /** 형태소 보호 단어 지문 — 불일치면 chunk_terms 재계산(임베딩 유지) 안내. */
 export const PROTECTED_FP_KEY = "index_protected_fingerprint";
+/** 형태소 재계산 진행 위치 {fp, lastId} — 중간에 멈추면 같은 보호 단어로 다시 누를 때 이어서 한다. */
+export const RETOKENIZE_PROGRESS_KEY = "retokenize_progress";
 
 export function getMeta(db: Database, key: string): string | null {
 	const r = db.exec("SELECT value FROM meta WHERE key = ?", [key]);
@@ -16,4 +18,8 @@ export function getMeta(db: Database, key: string): string | null {
 
 export function setMeta(db: Database, key: string, value: string): void {
 	db.run("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", [key, value]);
+}
+
+export function deleteMeta(db: Database, key: string): void {
+	db.run("DELETE FROM meta WHERE key = ?", [key]);
 }

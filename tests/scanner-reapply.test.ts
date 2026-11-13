@@ -7,9 +7,11 @@ vi.mock("obsidian", () => ({
 	normalizePath: (p: string) => p.replace(/\/+/g, "/"),
 }));
 
+import type { App } from "obsidian";
 import {
 	reapplyFolderSettings,
 	countUnindexed,
+	scanVault,
 } from "../src/indexer/scanner";
 import {
 	DEFAULT_SETTINGS,
@@ -27,6 +29,22 @@ function settingsFor(folders: { path: string; weight: number }[]) {
 		excludedFolders: [],
 	});
 }
+
+describe("scanVault", () => {
+	it("범위 안 노트만, 경로의 문자 순서로 돌려준다", () => {
+		const files = ["on/나.md", "on/b.md", "off/x.md", "on/B.md", "on/a.md"].map(
+			(path) => ({ path, stat: { mtime: 1, size: 2 } }),
+		);
+		const app = { vault: { getMarkdownFiles: () => files } } as unknown as App;
+		const s = settingsFor([{ path: "on/", weight: 5 }]);
+		expect(scanVault(app, s).map((r) => r.path)).toEqual([
+			"on/B.md",
+			"on/a.md",
+			"on/b.md",
+			"on/나.md",
+		]);
+	});
+});
 
 describe("countUnindexed", () => {
 	it("범위 경로 중 notes에 없는 수를 센다", async () => {

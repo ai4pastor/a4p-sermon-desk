@@ -48,7 +48,9 @@ export function scanVault(
 			weight: cat.weight,
 		});
 	}
-	records.sort((a, b) => a.path.localeCompare(b.path));
+	// 기본 문자 비교 — localeCompare는 20만 경로에 0.75초(기본 비교 0.15초)이고 설정 탭을 열 때마다 돈다.
+	// 순서는 색인 처리 순서에만 쓰인다.
+	records.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 	return records;
 }
 

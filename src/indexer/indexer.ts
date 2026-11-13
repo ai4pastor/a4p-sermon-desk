@@ -9,10 +9,12 @@ import { scanVault, reapplyFolderSettings, type NoteRecord } from "./scanner";
 import {
 	getMeta,
 	setMeta,
+	deleteMeta,
 	FOLDERS_FP_KEY,
 	ALGO_VERSION_KEY,
 	DOCTRINE_FP_KEY,
 	PROTECTED_FP_KEY,
+	RETOKENIZE_PROGRESS_KEY,
 } from "../db/meta";
 import { parseFile } from "./parser";
 import { chunkBody } from "./chunker";
@@ -285,6 +287,8 @@ export async function runIndex(
 		setMeta(db, DOCTRINE_FP_KEY, lexiconFp);
 		if (full && options.protectedFp !== undefined) {
 			setMeta(db, PROTECTED_FP_KEY, options.protectedFp);
+			// 전체 재색인이 모든 청크를 현재 보호 단어로 다시 토큰화했다 — 멈춘 재계산 기록은 무의미
+			deleteMeta(db, RETOKENIZE_PROGRESS_KEY);
 		}
 		db.exec("COMMIT");
 		if (full) {
@@ -331,49 +335,113 @@ export async function runIndex(
 	}
 }
 
+/** 형태소 재계산 배치 크기 — 배치마다 COMMIT하고 진행 위치를 meta에 남긴다. */
+export const RETOKENIZE_BATCH = 500;
+
+export interface RetokenizeProgress {
+	/** 마지막으로 반영된 청크 id — chunks.id는 AUTOINCREMENT라 새 청크는 항상 더 크다. */
+	lastId: number;
+	/** 그중 지금 남아 있는 청크 수(진행 표시용). */
+	done: number;
+}
+
+/**
+ * 같은 보호 단어로 하다 멈춘 재계산이 있으면 그 위치. 이미 반영됐거나(전체 재색인 등)
+ * 그 뒤 보호 단어가 바뀌었으면 null — 처음부터 한다.
+ */
+export function readRetokenizeProgress(
+	db: Database,
+	protectedFp: string,
+): RetokenizeProgress | null {
+	if (getMeta(db, PROTECTED_FP_KEY) === protectedFp) return null;
+	const raw = getMeta(db, RETOKENIZE_PROGRESS_KEY);
+	if (!raw) return null;
+	let p: { fp?: unknown; lastId?: unknown };
+	try {
+		p = JSON.parse(raw);
+	} catch {
+		return null;
+	}
+	if (p.fp !== protectedFp || typeof p.lastId !== "number") return null;
+	const done = Number(
+		db.exec("SELECT COUNT(*) FROM chunks WHERE id <= ?", [p.lastId])[0]
+			?.values[0]?.[0] ?? 0,
+	);
+	return { lastId: p.lastId, done };
+}
+
 /**
  * 형태소 색인(chunk_terms)만 다시 계산 — 보호 단어 변경 반영용.
  * chunks·embeddings는 그대로 두므로 API 비용 0. bm25 통계 캐시는
  * chunk_terms COUNT 지문 변화로 자동 무효화된다.
+ *
+ * 청크가 많으면 오래 걸린다(실측: 청크 4,480개를 옵시디언에서 45분). 그래서 배치마다
+ * COMMIT하고 진행 위치를 meta에 남긴다 — 중간에 멈춰도 같은 보호 단어로 다시 부르면
+ * 이어서 한다. onBatchCommitted는 트랜잭션 밖에서 불리므로 호출자가 여기서 디스크에
+ * 저장할 수 있다. sql.js export()는 준비된 문장을 모두 해제하므로 문장은 배치마다 만든다.
  */
 export async function retokenizeAllChunks(
 	db: Database,
 	protectedFp: string,
 	onProgress?: (done: number, total: number) => void,
-): Promise<{ chunks: number; terms: number }> {
-	const rows = db.exec("SELECT id, heading, text FROM chunks")[0]?.values ?? [];
-	const total = rows.length;
-	let terms = 0;
-	db.exec("BEGIN TRANSACTION");
-	const del = db.prepare("DELETE FROM chunk_terms WHERE chunk_id = ?");
-	const ins = db.prepare(
-		"INSERT INTO chunk_terms(chunk_id, term) VALUES (?, ?)",
+	onBatchCommitted?: () => Promise<void>,
+): Promise<{ chunks: number; terms: number; resumedFrom: number }> {
+	const resume = readRetokenizeProgress(db, protectedFp);
+	const total = Number(
+		db.exec("SELECT COUNT(*) FROM chunks")[0]?.values[0]?.[0] ?? 0,
 	);
-	try {
-		for (let i = 0; i < rows.length; i++) {
-			const [idRaw, headingRaw, textRaw] = rows[i];
-			const id = Number(idRaw);
-			const heading = headingRaw === null ? null : String(headingRaw);
-			const text = String(textRaw ?? "");
-			del.run([id]);
-			// runIndex와 동일한 입력(heading + 본문)으로 토큰화해야 색인이 일치한다.
-			const toks = await tokenize(heading ? `${heading}\n${text}` : text);
-			for (const t of toks) ins.run([id, t]);
-			terms += toks.length;
-			if (i % 50 === 49) {
-				onProgress?.(i + 1, total);
-				await new Promise((r) => setTimeout(r, 0));
+	const resumedFrom = resume?.done ?? 0;
+	let lastId = resume?.lastId ?? 0;
+	let done = resumedFrom;
+	let terms = 0;
+	onProgress?.(done, total);
+	for (;;) {
+		const rows =
+			db.exec(
+				"SELECT id, heading, text FROM chunks WHERE id > ? ORDER BY id LIMIT ?",
+				[lastId, RETOKENIZE_BATCH],
+			)[0]?.values ?? [];
+		if (rows.length === 0) break;
+		db.exec("BEGIN TRANSACTION");
+		const del = db.prepare("DELETE FROM chunk_terms WHERE chunk_id = ?");
+		const ins = db.prepare(
+			"INSERT INTO chunk_terms(chunk_id, term) VALUES (?, ?)",
+		);
+		try {
+			for (let i = 0; i < rows.length; i++) {
+				const [idRaw, headingRaw, textRaw] = rows[i];
+				const id = Number(idRaw);
+				const heading = headingRaw === null ? null : String(headingRaw);
+				const text = String(textRaw ?? "");
+				del.run([id]);
+				// runIndex와 동일한 입력(heading + 본문)으로 토큰화해야 색인이 일치한다.
+				const toks = await tokenize(heading ? `${heading}\n${text}` : text);
+				for (const t of toks) ins.run([id, t]);
+				terms += toks.length;
+				lastId = id;
+				done++;
+				if (i % 50 === 49) {
+					onProgress?.(done, total);
+					await new Promise((r) => setTimeout(r, 0));
+				}
 			}
+			setMeta(
+				db,
+				RETOKENIZE_PROGRESS_KEY,
+				JSON.stringify({ fp: protectedFp, lastId }),
+			);
+			db.exec("COMMIT");
+		} catch (e) {
+			db.exec("ROLLBACK");
+			throw e;
+		} finally {
+			del.free();
+			ins.free();
 		}
-		setMeta(db, PROTECTED_FP_KEY, protectedFp);
-		db.exec("COMMIT");
-	} catch (e) {
-		db.exec("ROLLBACK");
-		throw e;
-	} finally {
-		del.free();
-		ins.free();
+		onProgress?.(done, total);
+		await onBatchCommitted?.();
 	}
-	onProgress?.(total, total);
-	return { chunks: total, terms };
+	setMeta(db, PROTECTED_FP_KEY, protectedFp);
+	deleteMeta(db, RETOKENIZE_PROGRESS_KEY);
+	return { chunks: total, terms, resumedFrom };
 }
